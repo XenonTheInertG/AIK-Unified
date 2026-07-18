@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Android Image Kitchen In Browser (AIK-Browser)</title>
+<style>
+  @font-face {
+    font-family: 'JBM';
+    src: local('JetBrains Mono'), local('Consolas'), local('Menlo');
+  }
+  :root{
+    --bg:#0a0d0a; --panel:#0f130f; --panel2:#141914; --line:#232a23;
+    --text:#dfe6df; --dim:#828d82; --dimmer:#586158;
+    --green:#3fd97a; --green-dim:#2a7a4c; --amber:#e0a83e; --red:#e05c4e;
+    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--mono);}
+  body{padding:20px;padding-bottom:64px;font-size:14.5px;line-height:1.55;}
+  ::selection{background:var(--green-dim);color:#fff;}
+  h1,h2,h3{font-family:var(--mono);font-weight:700;margin:0;}
+  a{color:var(--green);}
+  .wrap{max-width:980px;margin:0 auto;}
+
+  /* header */
+  .top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:5px;flex-wrap:wrap;gap:8px;}
+  .brand{font-size:18px;letter-spacing:0.02em;}
+  .brand .prompt{color:var(--green);}
+  .brand .dim{color:var(--dim);font-weight:400;}
+  .brand .abbr{color:var(--dim);font-weight:400;font-size:14px;}
+  .sub{color:var(--dim);font-size:12.5px;margin-bottom:20px;}
+
+  /* boot log console - signature element */
+  .console{
+    background:#000; border:1px solid var(--line); border-radius:6px;
+    padding:12px 14px; height:170px; overflow-y:auto; font-size:12.5px;
+    color:#7fdb9a; margin-bottom:20px; white-space:pre-wrap; word-break:break-all;
+  }
+  .console .ln{opacity:0;animation:fadein .25s ease forwards;}
+  .console .t{color:var(--dimmer);}
+  .console .warn{color:var(--amber);}
+  .console .err{color:var(--red);}
+  .console .ok{color:var(--green);}
+  @keyframes fadein{to{opacity:1;}}
+  .console::-webkit-scrollbar{width:8px;}
+  .console::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
+
+  /* drop zone */
+  .drop{
+    border:1px dashed var(--line); border-radius:8px; padding:34px 18px;
+    text-align:center; cursor:pointer; transition:border-color .15s, background .15s;
+    background:var(--panel); margin-bottom:20px;
+  }
+  .drop:hover, .drop.drag{border-color:var(--green-dim); background:var(--panel2);}
+  .drop .icon{font-size:22px; color:var(--dim); margin-bottom:8px;}
+  .drop .main{color:var(--text); font-size:14.5px;}
+  .drop .hint{color:var(--dimmer); font-size:12px; margin-top:5px;}
+  input[type=file]{display:none;}
+
+  /* tabs */
+  .tabs{display:flex; gap:2px; border-bottom:1px solid var(--line); margin-bottom:18px; flex-wrap:wrap;}
+  .tab{padding:9px 16px; color:var(--dim); cursor:pointer; font-size:13px; border-bottom:2px solid transparent; user-select:none;}
+  .tab:hover{color:var(--text);}
+  .tab.active{color:var(--green); border-bottom-color:var(--green);}
+  .panel{display:none;}
+  .panel.active{display:block;}
+
+  /* cards / rows */
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:16px 18px; margin-bottom:14px;}
+  .card h3{font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin-bottom:11px; font-weight:600;}
+  .kv{display:grid; grid-template-columns:168px 1fr; gap:6px 10px; font-size:13px;}
+  .kv .k{color:var(--dimmer);}
+  .kv .v{color:var(--text); word-break:break-all;}
+  .badge{display:inline-block; padding:2px 8px; border-radius:3px; font-size:10.5px; border:1px solid var(--line); color:var(--dim); margin-left:6px;}
+  .badge.green{color:var(--green); border-color:var(--green-dim);}
+  .badge.amber{color:var(--amber); border-color:#7a5f22;}
+
+  .seclist{display:flex; flex-direction:column; gap:9px;}
+  .sec{display:flex; align-items:center; justify-content:space-between; padding:11px 13px; background:var(--panel2); border:1px solid var(--line); border-radius:5px; flex-wrap:wrap; gap:8px;}
+  .sec .name{font-weight:700; color:var(--text); font-size:13.5px;}
+  .sec .meta{color:var(--dimmer); font-size:12px; margin-top:2px;}
+  .sec .actions{display:flex; gap:6px; align-items:center;}
+
+  button, .btn{
+    font-family:var(--mono); font-size:12.5px; background:transparent; color:var(--text);
+    border:1px solid var(--line); border-radius:4px; padding:7px 12px; cursor:pointer;
+    transition:border-color .12s, color .12s;
+  }
+  button:hover, .btn:hover{border-color:var(--green-dim); color:var(--green);}
+  button.primary{border-color:var(--green-dim); color:var(--green); background:rgba(63,217,122,.06);}
+  button.primary:hover{background:rgba(63,217,122,.12);}
+  button:disabled{opacity:.35; cursor:not-allowed;}
+  button.danger:hover{border-color:#7a2e26; color:var(--red);}
+  label.filebtn{display:inline-block;}
+
+  table{width:100%; border-collapse:collapse; font-size:12.5px;}
+  th{text-align:left; color:var(--dimmer); font-weight:600; padding:7px 9px; border-bottom:1px solid var(--line); text-transform:uppercase; font-size:10.5px; letter-spacing:.05em;}
+  td{padding:7px 9px; border-bottom:1px solid var(--line); color:var(--text); word-break:break-all;}
+  tr:hover td{background:var(--panel2);}
+  .mono-small{color:var(--dimmer); font-size:11px;}
+
+  .warnbox{border:1px solid #7a5f22; background:rgba(224,168,62,.07); border-radius:5px; padding:11px 13px; font-size:12.5px; color:var(--amber); margin-bottom:13px;}
+  .warnbox b{color:var(--amber);}
+  .errbox{border:1px solid #7a2e26; background:rgba(224,92,78,.07); border-radius:5px; padding:11px 13px; font-size:12.5px; color:var(--red); margin-bottom:13px;}
+
+  .footer-actions{position:sticky; bottom:0; background:linear-gradient(transparent, var(--bg) 30%); padding-top:20px; margin-top:10px; display:flex; gap:8px; justify-content:flex-end;}
+
+  .empty{color:var(--dimmer); font-size:12px; text-align:center; padding:30px 0;}
+  .flexrow{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+  .grow{flex:1;}
+  small.note{color:var(--dimmer); font-size:10.5px; display:block; margin-top:6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="brand"><span class="prompt">&gt;</span> Android Image Kitchen In Browser <span class="abbr dim">(AIK-Browser)</span></div>
+    <div class="badge" id="libStatus">loading libs…</div>
+  </div>
+  <div class="sub">Unpack &amp; repack Android boot.img / recovery.img / vendor_boot.img — entirely in your browser. Nothing is uploaded anywhere.</div>
+
+  <div class="console" id="console"></div>
+
+  <div class="drop" id="drop">
+    <div class="icon">⇩</div>
+    <div class="main">Drop a boot.img, recovery.img, or vendor_boot.img here — or tap to choose a file</div>
+    <div class="hint">v0–v4 headers, vendor_boot v3/v4 all auto-detected</div>
+    <input type="file" id="fileInput">
+  </div>
+
+  <div id="app" style="display:none;">
+    <div class="tabs">
+      <div class="tab active" data-tab="header">header</div>
+      <div class="tab" data-tab="sections">sections</div>
+      <div class="tab" data-tab="ramdisk">ramdisk</div>
+      <div class="tab" data-tab="repack">repack</div>
+    </div>
+
+    <div class="panel active" id="panel-header"></div>
+    <div class="panel" id="panel-sections"></div>
+    <div class="panel" id="panel-ramdisk"></div>
+    <div class="panel" id="panel-repack"></div>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+"use strict";
+
+/* ============================== boot log console ============================== */
+const consoleEl = document.getElementById('console');
+let t0 = performance.now();
+function log(msg, cls){
+  const line = document.createElement('div');
+  line.className = 'ln';
+  const ts = ((performance.now() - t0)/1000).toFixed(6).padStart(10,'0');
+  line.innerHTML = `<span class="t">[${ts}]</span> <span class="${cls||''}">${msg}</span>`;
+  consoleEl.appendChild(line);
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+log('bootimg-tool initializing…');
+
+let lz4Available = false;
+(function loadLz4(){
+  const s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/lz4js/0.2.0/lz4.js';
+  s.onload = () => { lz4Available = typeof LZ4 !== 'undefined'; log('lz4js loaded — lz4 sections can be recompressed', 'ok'); checkLibs(); };
+  s.onerror = () => { lz4Available = false; log('lz4js unavailable — lz4 sections will be passthrough-only on repack', 'warn'); checkLibs(); };
+  document.head.appendChild(s);
+})();
+function checkLibs(){
+  const ok = typeof pako !== 'undefined' && typeof JSZip !== 'undefined';
+  document.getElementById('libStatus').textContent = ok ? (lz4Available ? 'libs ready' : 'libs ready (no lz4)') : 'lib load failed';
+  document.getElementById('libStatus').className = 'badge ' + (ok ? 'green' : 'amber');
+}
+window.addEventListener('load', () => setTimeout(checkLibs, 300));
+
+/* ============================== helpers ============================== */
+function align(n, p){ return Math.ceil(n / p) * p; }
+function readStr(u8, off, len){
+  let end = off;
+  while (end < off + len && u8[end] !== 0) end++;
+  return new TextDecoder().decode(u8.subarray(off, end));
+}
+function writeStr(u8, off, len, str){
+  const bytes = new TextEncoder().encode(str);
+  u8.fill(0, off, off+len);
+  u8.set(bytes.subarray(0, Math.min(bytes.length, len)), off);
+}
+function fmtBytes(n){
+  if (n === 0) return '0 B';
+  const u = ['B','KB','MB','GB']; let i = 0; let v = n;
+  while (v >= 1024 && i < u.length-1){ v/=1024; i++; }
+  return v.toFixed(v<10 && i>0?2:0) + ' ' + u[i];
+}
+function hex8(u8, off, len){
+  let s = '';
+  for (let i=0;i<len && off+i<u8.length;i++) s += u8[off+i].toString(16).padStart(2,'0');
+  return s;
+}
+function download(bytes, filename){
+  const blob = new Blob([bytes], {type:'application/octet-stream'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+}
+
+/* ---- compression detection ---- */
+function detectCompression(u8){
+  if (u8.length >= 2 && u8[0]===0x1f && u8[1]===0x8b) return 'gzip';
+  if (u8.length >= 4 && u8[0]===0x02 && u8[1]===0x21 && u8[2]===0x4c && u8[3]===0x18) return 'lz4-legacy';
+  if (u8.length >= 4 && u8[0]===0x04 && u8[1]===0x22 && u8[2]===0x4d && u8[3]===0x18) return 'lz4-frame';
+  if (u8.length >= 6 && u8[0]===0xfd && u8[1]===0x37 && u8[2]===0x7a && u8[3]===0x58 && u8[4]===0x5a && u8[5]===0x00) return 'xz';
+  if (u8.length >= 6 && u8[0]===0x30 && u8[1]===0x37 && u8[2]===0x30 && u8[3]===0x37 && u8[4]===0x30 && u8[5]===0x31) return 'cpio-newc';
+  if (u8.length >= 2 && u8[0]===0x42 && u8[1]===0x5a) return 'bzip2';
+  return 'raw';
+}
+function decompress(u8, kind){
+  try{
+    if (kind === 'gzip') return pako.inflate(u8);
+    if (kind === 'lz4-frame' || kind === 'lz4-legacy'){
+      if (!lz4Available) return null;
+      return LZ4.decompress(u8);
+    }
+    return null; // xz, bzip2, raw -> not decompressed, treated as-is (cpio-newc needs no decompression)
+  }catch(e){ log('decompress failed: '+e.message, 'err'); return null; }
+}
+function recompress(u8, kind){
+  if (kind === 'gzip') return pako.gzip(u8, {level:9});
+  if ((kind === 'lz4-frame' || kind === 'lz4-legacy') && lz4Available) return LZ4.compress(u8);
+  return null; // signal passthrough required
+}
+
+/* ============================== state ============================== */
+let state = {
+  filename: '', raw: null, kind: null, // 'boot' | 'vendor_boot'
+  header: null, sections: {}, // name -> {offset,size,bytes,compression,decompressed,editedBytes}
+  cpioEntries: null, avbFooter: null
+};
+
+/* ============================== boot header parsing ============================== */
+function parseBootHeader(buf){
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  const magic = readStr(u8, 0, 8);
+  if (magic !== 'ANDROID!') return null;
+  const header_version = dv.getUint32(40, true);
+  const h = { magic, header_version, page_size: 4096 };
+  const secs = [];
+
+  if (header_version >= 3){
+    h.kernel_size = dv.getUint32(8, true);
+    h.ramdisk_size = dv.getUint32(12, true);
+    h.os_version_raw = dv.getUint32(16, true);
+    h.header_size = dv.getUint32(20, true);
+    h.cmdline = readStr(u8, 44, 1536);
+    if (header_version === 4) h.signature_size = dv.getUint32(44+1536, true);
+    h.page_size = 4096;
+    let off = align(h.header_size, h.page_size);
+    secs.push({name:'kernel', offset:off, size:h.kernel_size}); off = align(off+h.kernel_size, h.page_size);
+    secs.push({name:'ramdisk', offset:off, size:h.ramdisk_size}); off = align(off+h.ramdisk_size, h.page_size);
+    if (header_version === 4 && h.signature_size){
+      secs.push({name:'boot_signature', offset:off, size:h.signature_size}); off = align(off+h.signature_size, h.page_size);
+    }
+  } else {
+    h.kernel_size = dv.getUint32(8, true);
+    h.kernel_addr = dv.getUint32(12, true);
+    h.ramdisk_size = dv.getUint32(16, true);
+    h.ramdisk_addr = dv.getUint32(20, true);
+    h.second_size = dv.getUint32(24, true);
+    h.second_addr = dv.getUint32(28, true);
+    h.tags_addr = dv.getUint32(32, true);
+    h.page_size = dv.getUint32(36, true) || 2048;
+    h.os_version_raw = dv.getUint32(44, true);
+    h.name = readStr(u8, 48, 16);
+    h.cmdline = readStr(u8, 64, 512);
+    h.extra_cmdline = readStr(u8, 608, 1024);
+    h.id = hex8(u8, 576, 32);
+    if (header_version === 0){
+      h.header_size = 1632;
+    } else {
+      h.recovery_dtbo_size = dv.getUint32(1632, true);
+      h.recovery_dtbo_offset = Number(dv.getBigUint64(1636, true));
+      h.header_size = dv.getUint32(1644, true);
+      if (header_version === 2){
+        h.dtb_size = dv.getUint32(1648, true);
+        h.dtb_addr = Number(dv.getBigUint64(1652, true));
+      }
+    }
+    let off = align(h.header_size, h.page_size);
+    secs.push({name:'kernel', offset:off, size:h.kernel_size}); off = align(off+h.kernel_size, h.page_size);
+    secs.push({name:'ramdisk', offset:off, size:h.ramdisk_size}); off = align(off+h.ramdisk_size, h.page_size);
+    if (h.second_size){ secs.push({name:'second', offset:off, size:h.second_size}); off = align(off+h.second_size, h.page_size); }
+    if (h.recovery_dtbo_size){ secs.push({name:'recovery_dtbo', offset:off, size:h.recovery_dtbo_size}); off = align(off+h.recovery_dtbo_size, h.page_size); }
+    if (h.dtb_size){ secs.push({name:'dtb', offset:off, size:h.dtb_size}); off = align(off+h.dtb_size, h.page_size); }
+  }
+  h.os_version = decodeOsVersion(h.os_version_raw);
+  return { h, secs, kind:'boot' };
+}
+
+function decodeOsVersion(raw){
+  if (!raw) return '0 (GKI / unset)';
+  const osv = raw >>> 11;
+  const patch = raw & 0x7ff;
+  const a = (osv>>14)&0x7f, b=(osv>>7)&0x7f, c=osv&0x7f;
+  const py = (patch>>9)&0x7f, pm = patch&0x0f;
+  return `${a}.${b}.${c} (patch ${2000+py}-${String(pm).padStart(2,'0')})`;
+}
+
+function parseVendorBootHeader(buf){
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  const magic = readStr(u8, 0, 8);
+  if (magic !== 'VNDRBOOT') return null;
+  const h = { magic };
+  h.header_version = dv.getUint32(8, true);
+  h.page_size = dv.getUint32(12, true) || 4096;
+  h.kernel_addr = dv.getUint32(16, true);
+  h.ramdisk_addr = dv.getUint32(20, true);
+  h.vendor_ramdisk_size = dv.getUint32(24, true);
+  h.cmdline = readStr(u8, 28, 2048);
+  h.tags_addr = dv.getUint32(2076, true);
+  h.name = readStr(u8, 2080, 16);
+  h.header_size = dv.getUint32(2096, true);
+  h.dtb_size = dv.getUint32(2100, true);
+  h.dtb_addr = Number(dv.getBigUint64(2104, true));
+  const secs = [];
+  let off;
+  if (h.header_version >= 4){
+    h.vendor_ramdisk_table_size = dv.getUint32(2112, true);
+    h.vendor_ramdisk_table_entry_num = dv.getUint32(2116, true);
+    h.vendor_ramdisk_table_entry_size = dv.getUint32(2120, true);
+    h.bootconfig_size = dv.getUint32(2124, true);
+    off = align(2128, h.page_size);
+  } else {
+    off = align(2112, h.page_size);
+  }
+  secs.push({name:'vendor_ramdisk', offset:off, size:h.vendor_ramdisk_size}); off = align(off+h.vendor_ramdisk_size, h.page_size);
+  secs.push({name:'dtb', offset:off, size:h.dtb_size}); off = align(off+h.dtb_size, h.page_size);
+  if (h.header_version >= 4){
+    if (h.vendor_ramdisk_table_size){ secs.push({name:'vendor_ramdisk_table', offset:off, size:h.vendor_ramdisk_table_size}); off = align(off+h.vendor_ramdisk_table_size, h.page_size); }
+    if (h.bootconfig_size){ secs.push({name:'bootconfig', offset:off, size:h.bootconfig_size}); off = align(off+h.bootconfig_size, h.page_size); }
+  }
+  return { h, secs, kind:'vendor_boot' };
+}
+
+/* ---- AVB footer detection (last 64 bytes, magic "AVBf") ---- */
+function detectAvbFooter(u8){
+  if (u8.length < 64) return null;
+  const tail = u8.subarray(u8.length-64, u8.length-60);
+  const m = new TextDecoder().decode(tail);
+  if (m === 'AVBf') return { present:true };
+  return null;
+}
+
+/* ============================== cpio (newc) ============================== */
+function align4(n){ return (n+3) & ~3; }
+function parseCpio(buf){
+  const u8 = new Uint8Array(buf);
+  const entries = [];
+  let off = 0;
+  while (off + 6 <= u8.length){
+    const magic = new TextDecoder().decode(u8.subarray(off, off+6));
+    if (magic !== '070701' && magic !== '070702') break;
+    const hx = (s,e) => parseInt(new TextDecoder().decode(u8.subarray(off+s, off+e)), 16) || 0;
+    const mode = hx(14,22), uid = hx(22,30), gid = hx(30,38), mtime = hx(46,54),
+          filesize = hx(54,62), namesize = hx(94,102);
+    const nameStart = off + 110;
+    if (nameStart + namesize > u8.length) break;
+    let raw = u8.subarray(nameStart, nameStart+namesize-1);
+    let name = new TextDecoder().decode(raw);
+    const dataStart = align4(nameStart + namesize);
+    if (name === 'TRAILER!!!') { off = align4(dataStart + filesize); break; }
+    entries.push({ name, mode, uid, gid, mtime, size: filesize, dataStart });
+    off = align4(dataStart + filesize);
+  }
+  return entries;
+}
+function buildCpio(entries, bytesFor){
+  const chunks = [];
+  let ino = 1;
+  const hdrField = (n) => (n>>>0).toString(16).padStart(8,'0');
+  for (const e of entries){
+    const data = bytesFor(e);
+    const nameBytes = new TextEncoder().encode(e.name + '\0');
+    const hdr = '070701' + hdrField(ino) + hdrField(e.mode) + hdrField(e.uid||0) + hdrField(e.gid||0) +
+      '00000001' + hdrField(e.mtime||0) + hdrField(data.length) +
+      '00000000'.repeat(4) + hdrField(nameBytes.length) + '00000000';
+    const hdrBytes = new TextEncoder().encode(hdr);
+    const c1 = new Uint8Array(align4(hdrBytes.length + nameBytes.length));
+    c1.set(hdrBytes,0); c1.set(nameBytes, hdrBytes.length);
+    chunks.push(c1);
+    const c2 = new Uint8Array(align4(data.length));
+    c2.set(data,0);
+    chunks.push(c2);
+    ino++;
+  }
+  const trailerName = new TextEncoder().encode('TRAILER!!!\0');
+  const trailerHdr = '070701' + hdrField(0).repeat(4) + '00000001' + hdrField(0) + hdrField(0) +
+    '00000000'.repeat(4) + hdrField(trailerName.length) + '00000000';
+  const trailerHdrBytes = new TextEncoder().encode(trailerHdr);
+  const tc = new Uint8Array(align4(trailerHdrBytes.length + trailerName.length));
+  tc.set(trailerHdrBytes,0); tc.set(trailerName, trailerHdrBytes.length);
+  chunks.push(tc);
+  let total = chunks.reduce((a,c)=>a+c.length,0);
+  total = Math.ceil(total/512)*512;
+  const out = new Uint8Array(total);
+  let p = 0;
+  for (const c of chunks){ out.set(c,p); p += c.length; }
+  return out;
+}
+function modeTypeLabel(mode){
+  const t = (mode >>> 12) & 0xF;
+  if (t===4) return 'dir'; if (t===8) return 'file'; if (t===0xA) return 'symlink';
+  if (t===1) return 'fifo'; if (t===2) return 'chr'; if (t===6) return 'blk'; if (t===0xC) return 'sock';
+  return '?';
+}
+
+/* ============================== SHA-1 id recompute (v0-v2, best effort) ============================== */
+async function computeIdV0V2(sections, secOrder){
+  // mirrors mkbootimg.py behaviour: sha1( for each section: data || u32le(size) )
+  const parts = [];
+  for (const name of secOrder){
+    const s = sections[name];
+    const data = s ? s.bytes : new Uint8Array(0);
+    parts.push(data);
+    const sizeBuf = new Uint8Array(4);
+    new DataView(sizeBuf.buffer).setUint32(0, data.length, true);
+    parts.push(sizeBuf);
+  }
+  let total = 0; for (const p of parts) total += p.length;
+  const cat = new Uint8Array(total);
+  let o = 0; for (const p of parts){ cat.set(p, o); o += p.length; }
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', cat));
+  const id = new Uint8Array(32);
+  id.set(digest.subarray(0,20), 0);
+  return id;
+}
+
+/* ============================== UI: file load ============================== */
+const dropEl = document.getElementById('drop');
+const fileInput = document.getElementById('fileInput');
+dropEl.addEventListener('click', () => fileInput.click());
+dropEl.addEventListener('dragover', e => { e.preventDefault(); dropEl.classList.add('drag'); });
+dropEl.addEventListener('dragleave', () => dropEl.classList.remove('drag'));
+dropEl.addEventListener('drop', e => {
+  e.preventDefault(); dropEl.classList.remove('drag');
+  if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e => { if (e.target.files.length) loadFile(e.target.files[0]); });
+
+async function loadFile(file){
+  log(`reading ${file.name} (${fmtBytes(file.size)})…`);
+  const buf = await file.arrayBuffer();
+  const u8 = new Uint8Array(buf);
+  log(`magic: ${JSON.stringify(readStr(u8,0,8))}`);
+
+  let parsed = parseBootHeader(buf);
+  if (!parsed) parsed = parseVendorBootHeader(buf);
+  if (!parsed){
+    log('unrecognized image — magic did not match ANDROID! or VNDRBOOT', 'err');
+    alert('This file does not look like an Android boot/recovery/vendor_boot image (bad magic).');
+    return;
+  }
+
+  log(`format: ${parsed.kind}  header_version=${parsed.h.header_version}  page_size=${parsed.h.page_size}`, 'ok');
+
+  const sections = {};
+  for (const s of parsed.secs){
+    if (s.size === 0) continue;
+    const bytes = u8.subarray(s.offset, s.offset + s.size);
+    const compression = detectCompression(bytes);
+    log(`section ${s.name}: offset=0x${s.offset.toString(16)} size=${fmtBytes(s.size)} compression=${compression}`);
+    sections[s.name] = { ...s, bytes, compression, editedBytes: null };
+  }
+
+  const avb = detectAvbFooter(u8);
+  if (avb) log('AVB footer detected at end of image — repacked image will need re-signing to pass verified boot', 'warn');
+
+  state = { filename: file.name, raw: buf, kind: parsed.kind, header: parsed.h, sections, cpioEntries: null, avbFooter: avb, secOrder: parsed.secs.map(s=>s.name) };
+
+  // parse ramdisk cpio if present and uncompressed/gzip-decompressible
+  const ramdiskKey = sections.ramdisk ? 'ramdisk' : (sections.vendor_ramdisk ? 'vendor_ramdisk' : null);
+  if (ramdiskKey){
+    const rd = sections[ramdiskKey];
+    let plain = rd.bytes;
+    if (rd.compression !== 'cpio-newc'){
+      const dec = decompress(rd.bytes, rd.compression);
+      if (dec) { plain = dec; log(`${ramdiskKey}: decompressed (${rd.compression}) → ${fmtBytes(dec.length)}`, 'ok'); }
+      else if (rd.compression !== 'raw') log(`${ramdiskKey}: could not decompress (${rd.compression}) — file listing unavailable`, 'warn');
+    }
+    if (detectCompression(plain) === 'cpio-newc'){
+      const entries = parseCpio(plain.buffer.slice(plain.byteOffset, plain.byteOffset+plain.length));
+      state.cpioEntries = entries;
+      state.cpioPlainBuffer = plain;
+      state.cpioKey = ramdiskKey;
+      log(`${ramdiskKey}: parsed cpio archive — ${entries.length} entries`, 'ok');
+    }
+  }
+
+  log('parse complete.', 'ok');
+  document.getElementById('app').style.display = 'block';
+  renderHeader();
+  renderSections();
+  renderRamdisk();
+  renderRepack();
+}
+
+/* ============================== tabs ============================== */
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById('panel-'+t.dataset.tab).classList.add('active');
+}));
+
+/* ============================== render: header ============================== */
+function renderHeader(){
+  const el = document.getElementById('panel-header');
+  const h = state.header;
+  let rows = '';
+  const add = (k,v) => { if (v !== undefined && v !== null && v !== '') rows += `<div class="k">${k}</div><div class="v">${v}</div>`; };
+  if (state.kind === 'boot'){
+    add('format', 'boot image (Android)');
+    add('header_version', h.header_version);
+    add('page_size', fmtBytes(h.page_size));
+    add('kernel_size', fmtBytes(h.kernel_size));
+    add('ramdisk_size', fmtBytes(h.ramdisk_size));
+    if (h.second_size) add('second_size', fmtBytes(h.second_size));
+    if (h.recovery_dtbo_size) add('recovery_dtbo_size', fmtBytes(h.recovery_dtbo_size));
+    if (h.dtb_size) add('dtb_size', fmtBytes(h.dtb_size));
+    if (h.signature_size) add('signature_size', fmtBytes(h.signature_size));
+    add('os_version', h.os_version);
+    add('cmdline', h.cmdline || '(empty)');
+    if (h.extra_cmdline) add('extra_cmdline', h.extra_cmdline);
+    if (h.name) add('board name', h.name || '(unset)');
+    if (h.id) add('id (sha1)', h.id.replace(/(00)+$/,'') || '(zero)');
+  } else {
+    add('format', 'vendor_boot image (Android)');
+    add('header_version', h.header_version);
+    add('page_size', fmtBytes(h.page_size));
+    add('vendor_ramdisk_size', fmtBytes(h.vendor_ramdisk_size));
+    add('dtb_size', fmtBytes(h.dtb_size));
+    if (h.bootconfig_size) add('bootconfig_size', fmtBytes(h.bootconfig_size));
+    if (h.vendor_ramdisk_table_entry_num) add('ramdisk table entries', h.vendor_ramdisk_table_entry_num);
+    add('cmdline', h.cmdline || '(empty)');
+    add('board name', h.name || '(unset)');
+  }
+
+  let warn = '';
+  if (state.avbFooter) warn = `<div class="warnbox"><b>AVB footer present.</b> This image is verified-boot signed. Any repacked output will have a stale/invalid signature and will not pass verification as-is — you'd need to re-sign it with your own AVB key outside the browser (e.g. via avbtool).</div>`;
+
+  el.innerHTML = `
+    ${warn}
+    <div class="card">
+      <h3>image header</h3>
+      <div class="kv">${rows}</div>
+    </div>
+    <div class="card">
+      <h3>file</h3>
+      <div class="kv">
+        <div class="k">filename</div><div class="v">${state.filename}</div>
+        <div class="k">total size</div><div class="v">${fmtBytes(state.raw.byteLength)}</div>
+      </div>
+    </div>`;
+}
+
+/* ============================== render: sections ============================== */
+function renderSections(){
+  const el = document.getElementById('panel-sections');
+  let list = '';
+  for (const [name, s] of Object.entries(state.sections)){
+    list += `
+      <div class="sec">
+        <div>
+          <div class="name">${name}</div>
+          <div class="meta">${fmtBytes(s.size)} · offset 0x${s.offset.toString(16)} · ${s.compression}</div>
+        </div>
+        <div class="actions">
+          <button onclick="downloadSection('${name}')">download raw</button>
+        </div>
+      </div>`;
+  }
+  el.innerHTML = `
+    <div class="card">
+      <h3>extracted sections</h3>
+      <div class="seclist">${list || '<div class="empty">no sections found</div>'}</div>
+      <small class="note">Sections download exactly as stored in the image (still compressed if they were compressed). Use the ramdisk tab to browse decompressed ramdisk contents.</small>
+    </div>`;
+}
+function downloadSection(name){
+  const s = state.sections[name];
+  const base = state.filename.replace(/\.[^.]+$/,'');
+  download(s.bytes, `${base}.${name}${extForCompression(s.compression)}`);
+  log(`downloaded ${name} (${fmtBytes(s.size)})`);
+}
+function extForCompression(c){
+  if (c==='gzip') return '.gz';
+  if (c==='lz4-frame'||c==='lz4-legacy') return '.lz4';
+  if (c==='xz') return '.xz';
+  if (c==='cpio-newc') return '.cpio';
+  return '.bin';
+}
+
+/* ============================== render: ramdisk ============================== */
+function renderRamdisk(){
+  const el = document.getElementById('panel-ramdisk');
+  if (!state.cpioEntries){
+    el.innerHTML = `<div class="card"><div class="empty">No readable cpio ramdisk found (either no ramdisk section, or it's compressed with a format this browser build can't decompress — xz ramdisks fall in this bucket).</div></div>`;
+    return;
+  }
+  let rows = '';
+  state.cpioEntries.forEach((e, i) => {
+    rows += `<tr>
+      <td>${e.name || '<em>(root)</em>'}</td>
+      <td class="mono-small">${modeTypeLabel(e.mode)}</td>
+      <td class="mono-small">${(e.mode & 0xFFF).toString(8)}</td>
+      <td class="mono-small">${fmtBytes(e.size)}</td>
+      <td><button onclick="downloadCpioEntry(${i})" ${e.size===0?'disabled':''}>get</button>
+          <label class="filebtn"><button onclick="this.nextElementSibling.click()">replace</button><input type="file" style="display:none" onchange="replaceCpioEntry(${i}, this.files[0])"></label>
+          <button class="danger" onclick="deleteCpioEntry(${i})">del</button></td>
+    </tr>`;
+  });
+  el.innerHTML = `
+    <div class="card">
+      <h3>${state.cpioKey} — ${state.cpioEntries.length} entries</h3>
+      <div style="max-height:340px; overflow-y:auto;">
+        <table>
+          <thead><tr><th>path</th><th>type</th><th>mode</th><th>size</th><th>actions</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="flexrow" style="margin-top:12px;">
+        <label class="filebtn"><button onclick="this.nextElementSibling.click()">add file</button><input type="file" style="display:none" onchange="addCpioEntry(this.files[0])"></label>
+        <button onclick="downloadCpioZip()">download all as zip</button>
+        <span class="grow"></span>
+        <button class="primary" onclick="rebuildRamdiskFromEntries()">apply changes to ramdisk</button>
+      </div>
+      <small class="note">Edits here modify an in-memory copy of the ramdisk. Click "apply changes" to rebuild the cpio archive — it'll then be used for repacking (tab: repack).</small>
+    </div>`;
+}
+function downloadCpioEntry(i){
+  const e = state.cpioEntries[i];
+  const buf = state.cpioPlainBuffer;
+  const bytes = buf.slice ? buf.slice(e.dataStart, e.dataStart+e.size) : new Uint8Array(buf.buffer, buf.byteOffset+e.dataStart, e.size);
+  const name = e.name.split('/').pop() || 'entry';
+  download(new Uint8Array(bytes), name);
+}
+async function replaceCpioEntry(i, file){
+  const buf = new Uint8Array(await file.arrayBuffer());
+  state.cpioEntries[i]._replacement = buf;
+  state.cpioEntries[i].size = buf.length;
+  log(`ramdisk entry "${state.cpioEntries[i].name}" queued for replacement (${fmtBytes(buf.length)})`);
+  renderRamdisk();
+}
+function deleteCpioEntry(i){
+  const name = state.cpioEntries[i].name;
+  state.cpioEntries[i]._deleted = true;
+  state.cpioEntries.splice(i,1);
+  log(`ramdisk entry "${name}" marked for deletion`);
+  renderRamdisk();
+}
+async function addCpioEntry(file){
+  const path = prompt('Path inside ramdisk (e.g. system/etc/myfile):', file.name);
+  if (!path) return;
+  const buf = new Uint8Array(await file.arrayBuffer());
+  state.cpioEntries.push({ name: path, mode: 0o100644, uid:0, gid:0, mtime:0, size: buf.length, dataStart:-1, _replacement: buf });
+  log(`ramdisk entry "${path}" added (${fmtBytes(buf.length)})`);
+  renderRamdisk();
+}
+function downloadCpioZip(){
+  const zip = new JSZip();
+  const buf = state.cpioPlainBuffer;
+  for (const e of state.cpioEntries){
+    if (modeTypeLabel(e.mode) === 'dir') continue;
+    const bytes = e._replacement || new Uint8Array(buf.buffer, buf.byteOffset+e.dataStart, e.size);
+    zip.file(e.name, bytes);
+  }
+  zip.generateAsync({type:'blob'}).then(blob => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = state.filename.replace(/\.[^.]+$/,'') + '.' + state.cpioKey + '.zip';
+    document.body.appendChild(a); a.click(); a.remove();
+  });
+  log('ramdisk contents zipped for download');
+}
+function rebuildRamdiskFromEntries(){
+  const buf = state.cpioPlainBuffer;
+  const newCpio = buildCpio(state.cpioEntries, (e) => {
+    if (e._replacement) return e._replacement;
+    return new Uint8Array(buf.buffer, buf.byteOffset+e.dataStart, e.size);
+  });
+  const sec = state.sections[state.cpioKey];
+  sec.editedBytes = { plain: newCpio, recompressAs: sec.compression };
+  log(`ramdisk rebuilt: ${fmtBytes(newCpio.length)} (will be recompressed as ${sec.compression === 'raw' ? 'uncompressed cpio' : sec.compression} on repack)`, 'ok');
+  renderRepack();
+  document.querySelector('.tab[data-tab="repack"]').click();
+}
+
+/* ============================== render: repack ============================== */
+function renderRepack(){
+  const el = document.getElementById('panel-repack');
+  let secRows = '';
+  for (const [name, s] of Object.entries(state.sections)){
+    const status = s.editedBytes ? `<span class="badge amber">modified</span>` :
+                    (s.replacementRaw ? `<span class="badge amber">replaced</span>` : `<span class="badge">unchanged</span>`);
+    secRows += `
+      <div class="sec">
+        <div>
+          <div class="name">${name} ${status}</div>
+          <div class="meta">${fmtBytes(s.size)} · ${s.compression}</div>
+        </div>
+        <div class="actions">
+          <label class="filebtn"><button onclick="this.nextElementSibling.click()">replace whole section</button>
+            <input type="file" style="display:none" onchange="replaceWholeSection('${name}', this.files[0])"></label>
+        </div>
+      </div>`;
+  }
+  el.innerHTML = `
+    <div class="card">
+      <h3>section overrides</h3>
+      <div class="seclist">${secRows}</div>
+      <small class="note">"Replace whole section" uploads raw bytes and recompresses them with the section's original compression before repacking. Editing the ramdisk via the Ramdisk tab is usually the better route for small tweaks.</small>
+    </div>
+    <div class="card">
+      <h3>build</h3>
+      <div class="flexrow">
+        <button class="primary" onclick="doRepack()">build boot.img</button>
+        <span class="grow"></span>
+      </div>
+      <small class="note">Recomputes header_size, page-aligned offsets, and (for header v0–v2) the SHA-1 id field. Unmodified sections pass through byte-for-byte.${state.avbFooter ? ' AVB footer will be stripped from the output — re-sign separately if you need verified boot to pass.' : ''}</small>
+    </div>
+    <div id="repackResult"></div>`;
+}
+async function replaceWholeSection(name, file){
+  const buf = new Uint8Array(await file.arrayBuffer());
+  state.sections[name].replacementRaw = buf;
+  log(`section "${name}" queued for full replacement (${fmtBytes(buf.length)}), will recompress as ${state.sections[name].compression}`);
+  renderRepack();
+}
+
+async function doRepack(){
+  const resultEl = document.getElementById('repackResult');
+  resultEl.innerHTML = `<div class="card"><div class="empty">building…</div></div>`;
+  log('--- repack started ---');
+
+  // resolve final bytes per section (compressed, ready to place in image)
+  const finalBytes = {};
+  for (const [name, s] of Object.entries(state.sections)){
+    let out = s.bytes; // default: passthrough original compressed bytes
+    if (s.editedBytes){
+      const plain = s.editedBytes.plain;
+      const kind = s.editedBytes.recompressAs;
+      if (kind === 'raw' || kind === 'cpio-newc'){
+        out = plain;
+      } else {
+        const rec = recompress(plain, kind);
+        if (rec) { out = rec; log(`${name}: recompressed as ${kind} → ${fmtBytes(rec.length)}`, 'ok'); }
+        else { out = plain; log(`${name}: could not recompress as ${kind} (library unavailable) — writing uncompressed instead. This may not boot if the kernel expects ${kind}.`, 'warn'); }
+      }
+    } else if (s.replacementRaw){
+      const kind = s.compression;
+      if (kind === 'raw' || kind === 'cpio-newc'){
+        out = s.replacementRaw;
+      } else {
+        const rec = recompress(s.replacementRaw, kind);
+        out = rec || s.replacementRaw;
+        if (!rec) log(`${name}: recompression unavailable for ${kind}, wrote raw bytes`, 'warn');
+      }
+    }
+    finalBytes[name] = out;
+  }
+
+  const h = state.header;
+  const pageSize = h.page_size;
+
+  if (state.kind === 'boot'){
+    let headerSize;
+    if (h.header_version >= 3) headerSize = (h.header_version === 4) ? (44+1536+4) : (44+1536);
+    else if (h.header_version === 0) headerSize = 1632;
+    else if (h.header_version === 1) headerSize = 1648;
+    else headerSize = 1660;
+
+    const order = state.secOrder;
+    let off = align(headerSize, pageSize);
+    const placements = {};
+    for (const name of order){
+      const bytes = finalBytes[name] || new Uint8Array(0);
+      if (bytes.length === 0) continue;
+      placements[name] = { offset: off, size: bytes.length, bytes };
+      off = align(off + bytes.length, pageSize);
+    }
+    const totalSize = off;
+    const out = new Uint8Array(totalSize);
+    const dv = new DataView(out.buffer);
+    writeStr(out, 0, 8, 'ANDROID!');
+
+    if (h.header_version >= 3){
+      dv.setUint32(8, (placements.kernel?placements.kernel.size:0), true);
+      dv.setUint32(12, (placements.ramdisk?placements.ramdisk.size:0), true);
+      dv.setUint32(16, h.os_version_raw||0, true);
+      dv.setUint32(20, headerSize, true);
+      dv.setUint32(40, h.header_version, true);
+      writeStr(out, 44, 1536, h.cmdline||'');
+      if (h.header_version === 4) dv.setUint32(44+1536, (placements.boot_signature?placements.boot_signature.size:0), true);
+    } else {
+      dv.setUint32(8, (placements.kernel?placements.kernel.size:0), true);
+      dv.setUint32(12, h.kernel_addr||0, true);
+      dv.setUint32(16, (placements.ramdisk?placements.ramdisk.size:0), true);
+      dv.setUint32(20, h.ramdisk_addr||0, true);
+      dv.setUint32(24, (placements.second?placements.second.size:0), true);
+      dv.setUint32(28, h.second_addr||0, true);
+      dv.setUint32(32, h.tags_addr||0, true);
+      dv.setUint32(36, pageSize, true);
+      dv.setUint32(40, h.header_version, true);
+      dv.setUint32(44, h.os_version_raw||0, true);
+      writeStr(out, 48, 16, h.name||'');
+      writeStr(out, 64, 512, h.cmdline||'');
+      writeStr(out, 608, 1024, h.extra_cmdline||'');
+      // id: recompute SHA1 over kernel/ramdisk/second(/recovery_dtbo/dtb) + size (best effort)
+      const idOrder = ['kernel','ramdisk','second'];
+      if (h.header_version >= 1) idOrder.push('recovery_dtbo');
+      if (h.header_version === 2) idOrder.push('dtb');
+      const idSections = {};
+      for (const n of idOrder) idSections[n] = placements[n] ? { bytes: placements[n].bytes } : null;
+      const id = await computeIdV0V2(idSections, idOrder);
+      out.set(id, 576);
+      if (h.header_version >= 1){
+        dv.setUint32(1632, (placements.recovery_dtbo?placements.recovery_dtbo.size:0), true);
+        dv.setBigUint64(1636, BigInt(placements.recovery_dtbo?placements.recovery_dtbo.offset:0), true);
+        dv.setUint32(1644, headerSize, true);
+        if (h.header_version === 2){
+          dv.setUint32(1648, (placements.dtb?placements.dtb.size:0), true);
+          dv.setBigUint64(1652, BigInt(placements.dtb?placements.dtb.offset:0), true);
+        }
+      }
+    }
+    for (const name of order){
+      if (!placements[name]) continue;
+      out.set(placements[name].bytes, placements[name].offset);
+    }
+
+    log(`repack complete: ${fmtBytes(out.length)} total`, 'ok');
+    resultEl.innerHTML = `<div class="card"><h3>done</h3><div class="flexrow"><button class="primary" onclick='downloadRepacked()'>download repacked image</button></div></div>`;
+    state._repackedBytes = out;
+  } else {
+    // vendor_boot repack
+    let headerSize = (h.header_version >= 4) ? 2128 : 2112;
+    const order = state.secOrder;
+    let off = align(headerSize, pageSize);
+    const placements = {};
+    for (const name of order){
+      const bytes = finalBytes[name] || new Uint8Array(0);
+      if (bytes.length === 0) continue;
+      placements[name] = { offset: off, size: bytes.length, bytes };
+      off = align(off + bytes.length, pageSize);
+    }
+    const totalSize = off;
+    const out = new Uint8Array(totalSize);
+    const dv = new DataView(out.buffer);
+    writeStr(out, 0, 8, 'VNDRBOOT');
+    dv.setUint32(8, h.header_version, true);
+    dv.setUint32(12, pageSize, true);
+    dv.setUint32(16, h.kernel_addr||0, true);
+    dv.setUint32(20, h.ramdisk_addr||0, true);
+    dv.setUint32(24, (placements.vendor_ramdisk?placements.vendor_ramdisk.size:0), true);
+    writeStr(out, 28, 2048, h.cmdline||'');
+    dv.setUint32(2076, h.tags_addr||0, true);
+    writeStr(out, 2080, 16, h.name||'');
+    dv.setUint32(2096, headerSize, true);
+    dv.setUint32(2100, (placements.dtb?placements.dtb.size:0), true);
+    dv.setBigUint64(2104, BigInt(h.dtb_addr||0), true);
+    if (h.header_version >= 4){
+      dv.setUint32(2112, (placements.vendor_ramdisk_table?placements.vendor_ramdisk_table.size:0), true);
+      dv.setUint32(2116, h.vendor_ramdisk_table_entry_num||0, true);
+      dv.setUint32(2120, h.vendor_ramdisk_table_entry_size||0, true);
+      dv.setUint32(2124, (placements.bootconfig?placements.bootconfig.size:0), true);
+    }
+    for (const name of order){
+      if (!placements[name]) continue;
+      out.set(placements[name].bytes, placements[name].offset);
+    }
+    log(`vendor_boot repack complete: ${fmtBytes(out.length)} total`, 'ok');
+    resultEl.innerHTML = `<div class="card"><h3>done</h3><div class="flexrow"><button class="primary" onclick='downloadRepacked()'>download repacked image</button></div></div>`;
+    state._repackedBytes = out;
+  }
+}
+function downloadRepacked(){
+  const base = state.filename.replace(/\.[^.]+$/,'');
+  download(state._repackedBytes, `${base}.repacked.img`);
+  log('repacked image downloaded', 'ok');
+}
+
+log('ready — drop a boot/recovery/vendor_boot image to begin.', 'ok');
+</script>
+</body>
+</html>
