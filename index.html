@@ -118,6 +118,7 @@
   <div class="top">
     <div class="brand"><span class="prompt">&gt;</span> Android Image Kitchen In Browser <span class="abbr dim">(AIK-Browser)</span></div>
     <div class="badge" id="libStatus">loading libs…</div>
+    <div class="badge">v1.1.0</div>
   </div>
   <div class="sub">Unpack &amp; repack Android boot.img / recovery.img / vendor_boot.img — entirely in your browser. Nothing is uploaded anywhere.</div>
 
@@ -135,12 +136,22 @@
       <div class="tab active" data-tab="header">header</div>
       <div class="tab" data-tab="sections">sections</div>
       <div class="tab" data-tab="ramdisk">ramdisk</div>
+      <div class="tab" data-tab="hex">hex</div>
+      <div class="tab" data-tab="dtb">dtb</div>
+      <div class="tab" data-tab="avb">avb</div>
+      <div class="tab" data-tab="diff">diff</div>
+      <div class="tab" data-tab="batch">batch</div>
       <div class="tab" data-tab="repack">repack</div>
     </div>
 
     <div class="panel active" id="panel-header"></div>
     <div class="panel" id="panel-sections"></div>
     <div class="panel" id="panel-ramdisk"></div>
+    <div class="panel" id="panel-hex"></div>
+    <div class="panel" id="panel-dtb"></div>
+    <div class="panel" id="panel-avb"></div>
+    <div class="panel" id="panel-diff"></div>
+    <div class="panel" id="panel-batch"></div>
     <div class="panel" id="panel-repack"></div>
   </div>
 
@@ -509,7 +520,11 @@ async function loadFile(file){
   renderHeader();
   renderSections();
   renderRamdisk();
+  renderHex();
+  renderDtb();
+  renderAvb();
   renderRepack();
+  saveSession();
 }
 
 /* ============================== tabs ============================== */
@@ -518,6 +533,8 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
   t.classList.add('active');
   document.getElementById('panel-'+t.dataset.tab).classList.add('active');
+  if (t.dataset.tab === 'diff' && state.raw) renderDiff();
+  if (t.dataset.tab === 'batch') renderBatch();
 }));
 
 /* ============================== render: header ============================== */
@@ -624,6 +641,7 @@ function renderRamdisk(){
       <td class="mono-small">${fmtBytes(e.size)}</td>
       <td><button onclick="downloadCpioEntry(${i})" ${e.size===0?'disabled':''}>get</button>
           <label class="filebtn"><button onclick="this.nextElementSibling.click()">replace</button><input type="file" style="display:none" onchange="replaceCpioEntry(${i}, this.files[0])"></label>
+          ${looksLikeTextConfig(e.name) ? `<button onclick="openTextEditorFor(${i})">edit as text</button>` : ''}
           <button class="danger" onclick="deleteCpioEntry(${i})">del</button></td>
     </tr>`;
   });
@@ -897,7 +915,849 @@ function downloadRepacked(){
   log('repacked image downloaded', 'ok');
 }
 
-log('ready — drop a boot/recovery/vendor_boot image to begin.', 'ok');
+/* ============================== hex viewer ============================== */
+let hexState = { section: null, offset: 0 };
+const HEX_PAGE = 512;
+
+function renderHex(){
+  const el = document.getElementById('panel-hex');
+  const names = Object.keys(state.sections || {});
+  if (!names.length){ el.innerHTML = `<div class="card"><div class="empty">no sections loaded</div></div>`; return; }
+  if (!hexState.section || !state.sections[hexState.section]) hexState.section = names[0];
+  let opts = names.map(n => `<option value="${n}" ${n===hexState.section?'selected':''}>${n}</option>`).join('');
+  el.innerHTML = `
+    <div class="card">
+      <h3>hex / ascii dump</h3>
+      <div class="flexrow" style="margin-bottom:10px;">
+        <select id="hexSectionSel" onchange="hexState.section=this.value; hexState.offset=0; renderHexDump();" style="background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:6px 10px; font-family:var(--mono); font-size:12.5px;">${opts}</select>
+        <span class="grow"></span>
+        <button onclick="hexState.offset=Math.max(0,hexState.offset-HEX_PAGE); renderHexDump();">&larr; prev</button>
+        <button onclick="hexState.offset+=HEX_PAGE; renderHexDump();">next &rarr;</button>
+      </div>
+      <div id="hexDump" class="console" style="height:340px; color:var(--text);"></div>
+      <small class="note">Showing ${HEX_PAGE} bytes per page from the section's raw (still-compressed, if applicable) bytes.</small>
+    </div>`;
+  renderHexDump();
+}
+function renderHexDump(){
+  const sec = state.sections[hexState.section];
+  const dumpEl = document.getElementById('hexDump');
+  if (!sec || !dumpEl) return;
+  const start = Math.min(hexState.offset, Math.max(0, sec.size - 1));
+  const end = Math.min(start + HEX_PAGE, sec.size);
+  let out = '';
+  for (let row = start; row < end; row += 16){
+    const bytes = sec.bytes.subarray(row, Math.min(row+16, end));
+    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2,'0')).join(' ').padEnd(47,' ');
+    const ascii = Array.from(bytes).map(b => (b>=32 && b<127) ? String.fromCharCode(b) : '.').join('');
+    out += `<div>${row.toString(16).padStart(8,'0')}  ${hex}  ${ascii}</div>`;
+  }
+  dumpEl.innerHTML = out || '<div class="empty">end of section</div>';
+}
+
+/* ============================== DTB (flattened device tree) inspector ============================== */
+// Parses the FDT blob format (magic 0xd00dfeed) per the Devicetree
+// Specification: big-endian header, a structure block of tagged tokens,
+// and a strings block referenced by property name offsets.
+const FDT_MAGIC = 0xd00dfeed;
+const FDT_BEGIN_NODE = 1, FDT_END_NODE = 2, FDT_PROP = 3, FDT_NOP = 4, FDT_END = 9;
+
+function parseDtb(buf){
+  const dv = new DataView(buf);
+  if (dv.getUint32(0, false) !== FDT_MAGIC) return null;
+  const totalsize = dv.getUint32(4, false);
+  const off_dt_struct = dv.getUint32(8, false);
+  const off_dt_strings = dv.getUint32(12, false);
+  const version = dv.getUint32(20, false);
+  const size_dt_strings = dv.getUint32(32, false);
+  const size_dt_struct = dv.getUint32(36, false);
+
+  const u8 = new Uint8Array(buf);
+  function readCStrAt(off, base){
+    let end = base+off;
+    while (end < u8.length && u8[end] !== 0) end++;
+    return new TextDecoder().decode(u8.subarray(base+off, end));
+  }
+
+  let p = off_dt_struct;
+  const container = { name: '(container)', props: [], children: [] };
+  const stack = [container];
+  let iterations = 0;
+  while (p < off_dt_struct + size_dt_struct && iterations < 200000){
+    iterations++;
+    const tag = dv.getUint32(p, false); p += 4;
+    if (tag === FDT_BEGIN_NODE){
+      let end = p;
+      while (u8[end] !== 0) end++;
+      const name = new TextDecoder().decode(u8.subarray(p, end));
+      p = Math.ceil((end + 1 - off_dt_struct) / 4) * 4 + off_dt_struct;
+      const node = { name: name || '/', props: [], children: [] };
+      stack[stack.length-1].children.push(node);
+      stack.push(node);
+    } else if (tag === FDT_END_NODE){
+      if (stack.length > 1) stack.pop();
+    } else if (tag === FDT_PROP){
+      const len = dv.getUint32(p, false); const nameoff = dv.getUint32(p+4, false); p += 8;
+      const propName = readCStrAt(nameoff, off_dt_strings);
+      const valBytes = u8.subarray(p, p+len);
+      p = Math.ceil((p + len - off_dt_struct) / 4) * 4 + off_dt_struct;
+      stack[stack.length-1].props.push({ name: propName, len, bytes: valBytes });
+    } else if (tag === FDT_NOP){
+      // no-op, nothing to consume
+    } else if (tag === FDT_END){
+      break;
+    } else {
+      break; // unknown/corrupt token, stop rather than loop forever
+    }
+  }
+  const root = container.children[0] || { name:'', props:[], children:[] };
+  if (root.name === '') root.name = '/';
+  return { version, totalsize, root };
+}
+function formatDtbPropValue(p){
+  const b = p.bytes;
+  if (b.length === 0) return '(empty / boolean)';
+  // printable-string heuristic: all bytes printable ASCII or NUL, ends with NUL
+  let allPrintable = true;
+  for (let i=0;i<b.length;i++){
+    const c = b[i];
+    if (!((c>=32&&c<127) || c===0)) { allPrintable = false; break; }
+  }
+  if (allPrintable && b[b.length-1] === 0){
+    return new TextDecoder().decode(b).split('\0').filter(s=>s.length).join(', ');
+  }
+  if (b.length === 4) return '0x' + Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join('') + ` (${new DataView(b.buffer, b.byteOffset, 4).getUint32(0,false)})`;
+  if (b.length <= 16) return Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(' ');
+  return `<${b.length} bytes>`;
+}
+function renderDtbNode(node, depth){
+  const pad = 14 + depth*18;
+  let html = `<div style="padding:5px 0 5px ${pad}px; border-bottom:1px solid var(--line);">`;
+  html += `<span style="color:var(--green); font-weight:700;">${node.name}</span>`;
+  html += `</div>`;
+  for (const p of node.props){
+    html += `<div style="padding:4px 0 4px ${pad+16}px; font-size:11.5px; color:var(--dimmer); border-bottom:1px solid var(--line);">`;
+    html += `<span style="color:var(--dim);">${p.name}</span> = <span style="color:var(--text);">${formatDtbPropValue(p)}</span>`;
+    html += `</div>`;
+  }
+  for (const c of node.children) html += renderDtbNode(c, depth+1);
+  return html;
+}
+function renderDtb(){
+  const el = document.getElementById('panel-dtb');
+  const candidates = ['dtb','recovery_dtbo'].filter(n => state.sections[n]);
+  if (!candidates.length){
+    el.innerHTML = `<div class="card"><div class="empty">no dtb / recovery_dtbo section in this image</div></div>`;
+    return;
+  }
+  let out = '';
+  for (const name of candidates){
+    const sec = state.sections[name];
+    let plain = sec.bytes;
+    if (sec.compression !== 'raw'){
+      const dec = decompress(sec.bytes, sec.compression);
+      if (dec) plain = dec;
+    }
+    const buf = plain.buffer.slice(plain.byteOffset, plain.byteOffset + plain.length);
+    const parsed = parseDtb(buf);
+    if (!parsed){
+      out += `<div class="card"><h3>${name}</h3><div class="empty">not a valid FDT blob (bad magic) or concatenated multi-DTB image not yet supported</div></div>`;
+      continue;
+    }
+    out += `<div class="card"><h3>${name} — FDT v${parsed.version}, ${fmtBytes(parsed.totalsize)}</h3>
+      <div style="max-height:400px; overflow-y:auto;">${renderDtbNode(parsed.root, 0)}</div>
+    </div>`;
+  }
+  el.innerHTML = out;
+}
+
+/* ============================== AVB (Android Verified Boot) signing/verification ============================== */
+// Mirrors aik.py's implementation of the on-disk format from AOSP's libavb
+// (avb_vbmeta_image.h, avb_footer.h, avb_hash_descriptor.h, avb_crypto.h).
+// All vbmeta/footer/descriptor integers are big-endian. Uses WebCrypto for
+// RSA keygen/sign/verify and BigInt for the Montgomery (n0inv/rr) precompute
+// that libavb's software modexp needs alongside the raw public key.
+const AVB_MAGIC = [0x41,0x56,0x42,0x30]; // "AVB0"
+const AVB_FOOTER_MAGIC = [0x41,0x56,0x42,0x66]; // "AVBf"
+const AVB_HEADER_SIZE = 256;
+const AVB_FOOTER_SIZE = 64;
+const AVB_ALGORITHMS = { 'SHA256_RSA2048': [1,32,256,2048], 'SHA256_RSA4096': [2,32,512,4096] };
+
+function bytesToBigInt(bytes){
+  let x = 0n;
+  for (const b of bytes) x = (x << 8n) | BigInt(b);
+  return x;
+}
+function bigIntToBytes(x, len){
+  const out = new Uint8Array(len);
+  for (let i=len-1;i>=0;i--){ out[i] = Number(x & 0xffn); x >>= 8n; }
+  return out;
+}
+function egcd(a, b){
+  if (a === 0n) return [b, 0n, 1n];
+  const [g, x1, y1] = egcd(b % a, a);
+  return [g, y1 - (b / a) * x1, x1];
+}
+function modinv(a, m){
+  const [g, x] = egcd(((a % m) + m) % m, m);
+  if (g !== 1n) throw new Error('modular inverse does not exist');
+  return ((x % m) + m) % m;
+}
+
+async function avbGenKey(bits){
+  const kp = await crypto.subtle.generateKey(
+    { name:'RSASSA-PKCS1-v1_5', modulusLength: bits, publicExponent: new Uint8Array([1,0,1]), hash:'SHA-256' },
+    true, ['sign','verify']
+  );
+  return kp;
+}
+async function avbExportPrivatePem(key){
+  const der = await crypto.subtle.exportKey('pkcs8', key);
+  return derToPem(der, 'PRIVATE KEY');
+}
+async function avbExportPublicPem(key){
+  const der = await crypto.subtle.exportKey('spki', key);
+  return derToPem(der, 'PUBLIC KEY');
+}
+function derToPem(der, label){
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(der)));
+  const lines = b64.match(/.{1,64}/g).join('\n');
+  return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----\n`;
+}
+function pemToDer(pem){
+  const b64 = pem.replace(/-----[^-]+-----/g,'').replace(/\s+/g,'');
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
+async function avbImportPrivateFromPem(pem){
+  return crypto.subtle.importKey('pkcs8', pemToDer(pem),
+    { name:'RSASSA-PKCS1-v1_5', hash:'SHA-256' }, true, ['sign']);
+}
+async function avbImportPublicFromPem(pem){
+  return crypto.subtle.importKey('spki', pemToDer(pem),
+    { name:'RSASSA-PKCS1-v1_5', hash:'SHA-256' }, true, ['verify']);
+}
+async function avbGetPublicNumbers(pubKey){
+  const jwk = await crypto.subtle.exportKey('jwk', pubKey);
+  const n = bytesToBigInt(base64urlToBytes(jwk.n));
+  return { n, keySize: base64urlToBytes(jwk.n).length * 8 };
+}
+function base64urlToBytes(s){
+  s = s.replace(/-/g,'+').replace(/_/g,'/');
+  while (s.length % 4) s += '=';
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function avbEncodePublicKey(pubKey){
+  const { n, keySize } = await avbGetPublicNumbers(pubKey);
+  const numBytes = keySize / 8;
+  const b = 2n ** 32n;
+  const n0inv = b - modinv(n % b, b);
+  const r = 2n ** BigInt(keySize);
+  const rrmodn = (r * r) % n;
+  const out = new Uint8Array(8 + numBytes*2);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, keySize, false);
+  dv.setUint32(4, Number(n0inv), false);
+  out.set(bigIntToBytes(n, numBytes), 8);
+  out.set(bigIntToBytes(rrmodn, numBytes), 8+numBytes);
+  return out;
+}
+function avbBuildHashDescriptor(partitionName, imageSize, salt, digest){
+  const nameBytes = new TextEncoder().encode(partitionName);
+  const fixed = new Uint8Array(8 + 32 + 16 + 60);
+  const dv = new DataView(fixed.buffer);
+  dv.setBigUint64(0, BigInt(imageSize), false);
+  const hashAlgo = new TextEncoder().encode('sha256');
+  fixed.set(hashAlgo, 8);
+  dv.setUint32(40, nameBytes.length, false);
+  dv.setUint32(44, salt.length, false);
+  dv.setUint32(48, digest.length, false);
+  dv.setUint32(52, 0, false); // flags
+  let payload = concatBytes([fixed, nameBytes, salt, digest]);
+  let nbf = payload.length;
+  const pad = (8 - (nbf % 8)) % 8;
+  payload = concatBytes([payload, new Uint8Array(pad)]);
+  nbf += pad;
+  const header = new Uint8Array(16);
+  const hdv = new DataView(header.buffer);
+  hdv.setBigUint64(0, 2n, false); // AVB_DESCRIPTOR_TAG_HASH
+  hdv.setBigUint64(8, BigInt(nbf), false);
+  return concatBytes([header, payload]);
+}
+function concatBytes(arrs){
+  let total = 0; for (const a of arrs) total += a.length;
+  const out = new Uint8Array(total);
+  let o = 0; for (const a of arrs){ out.set(a, o); o += a.length; }
+  return out;
+}
+
+async function avbSignImage(imageBytes, privKey, pubKey, partitionName, algorithmName, log_){
+  const [algoType, hashLen, sigLen, keyBits] = AVB_ALGORITHMS[algorithmName];
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const digestBuf = await crypto.subtle.digest('SHA-256', concatBytes([salt, imageBytes]));
+  const digest = new Uint8Array(digestBuf);
+
+  const descriptor = avbBuildHashDescriptor(partitionName, imageBytes.length, salt, digest);
+  const pubkeyBlob = await avbEncodePublicKey(pubKey);
+
+  const pubkeyOffset = 0, pubkeySize = pubkeyBlob.length;
+  const pkmdOffset = pubkeyOffset + pubkeySize, pkmdSize = 0;
+  const descOffset = pkmdOffset + pkmdSize, descSize = descriptor.length;
+  let aux = concatBytes([pubkeyBlob, descriptor]);
+  const auxPad = (64 - (aux.length % 64)) % 64;
+  aux = concatBytes([aux, new Uint8Array(auxPad)]);
+  const auxBlockSize = aux.length;
+
+  const header = new Uint8Array(AVB_HEADER_SIZE);
+  header.set(AVB_MAGIC, 0);
+  const dv = new DataView(header.buffer);
+  dv.setUint32(4, 1, false);
+  dv.setUint32(8, 0, false);
+  dv.setUint32(28, algoType, false);
+  dv.setBigUint64(32, 0n, false);
+  dv.setBigUint64(40, BigInt(hashLen), false);
+  dv.setBigUint64(48, BigInt(hashLen), false);
+  dv.setBigUint64(56, BigInt(sigLen), false);
+  dv.setBigUint64(64, BigInt(pubkeyOffset), false);
+  dv.setBigUint64(72, BigInt(pubkeySize), false);
+  dv.setBigUint64(80, BigInt(pkmdOffset), false);
+  dv.setBigUint64(88, BigInt(pkmdSize), false);
+  dv.setBigUint64(96, BigInt(descOffset), false);
+  dv.setBigUint64(104, BigInt(descSize), false);
+  dv.setBigUint64(112, 0n, false);
+  dv.setUint32(120, 0, false);
+  const release = new TextEncoder().encode('aik-browser avb-lite 1.0');
+  header.set(release, 128);
+
+  const authRawLen = hashLen + sigLen;
+  const authPad = (64 - (authRawLen % 64)) % 64;
+  const authBlockSize = authRawLen + authPad;
+  dv.setBigUint64(12, BigInt(authBlockSize), false);
+  dv.setBigUint64(20, BigInt(auxBlockSize), false);
+
+  const dataToSign = concatBytes([header, aux]);
+  const computedHashBuf = await crypto.subtle.digest('SHA-256', dataToSign);
+  const computedHash = new Uint8Array(computedHashBuf);
+  const sigBuf = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', privKey, dataToSign);
+  const signature = new Uint8Array(sigBuf);
+
+  const auth = concatBytes([computedHash, signature, new Uint8Array(authPad)]);
+  const vbmeta = concatBytes([header, auth, aux]);
+
+  const page = 4096;
+  const imagePaddedSize = align(imageBytes.length, page);
+  const vbmetaOffset = imagePaddedSize;
+  const vbmetaPaddedLen = align(vbmeta.length, page);
+  const partitionSize = align(vbmetaOffset + vbmetaPaddedLen + AVB_FOOTER_SIZE, page);
+
+  const out = new Uint8Array(partitionSize);
+  out.set(imageBytes, 0);
+  out.set(vbmeta, vbmetaOffset);
+
+  const footer = new Uint8Array(AVB_FOOTER_SIZE);
+  footer.set(AVB_FOOTER_MAGIC, 0);
+  const fdv = new DataView(footer.buffer);
+  fdv.setUint32(4, 1, false);
+  fdv.setUint32(8, 0, false);
+  fdv.setBigUint64(12, BigInt(imageBytes.length), false);
+  fdv.setBigUint64(20, BigInt(vbmetaOffset), false);
+  fdv.setBigUint64(28, BigInt(vbmeta.length), false);
+  out.set(footer, partitionSize - AVB_FOOTER_SIZE);
+
+  return { bytes: out, meta: { partitionName, algorithm: algorithmName, salt: toHex(salt), digest: toHex(digest),
+    vbmetaOffset, vbmetaSize: vbmeta.length, partitionSize, originalImageSize: imageBytes.length } };
+}
+function toHex(b){ return Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(''); }
+
+function avbParseFooter(buf){
+  if (buf.length < AVB_FOOTER_SIZE) return null;
+  const foot = buf.subarray(buf.length - AVB_FOOTER_SIZE);
+  if (!AVB_FOOTER_MAGIC.every((b,i)=>foot[i]===b)) return null;
+  const dv = new DataView(foot.buffer, foot.byteOffset, AVB_FOOTER_SIZE);
+  return {
+    originalImageSize: Number(dv.getBigUint64(12, false)),
+    vbmetaOffset: Number(dv.getBigUint64(20, false)),
+    vbmetaSize: Number(dv.getBigUint64(28, false)),
+  };
+}
+function avbParseVbmeta(vbmeta){
+  if (!AVB_MAGIC.every((b,i)=>vbmeta[i]===b)) return null;
+  const dv = new DataView(vbmeta.buffer, vbmeta.byteOffset, vbmeta.length);
+  const h = {};
+  h.authBlockSize = Number(dv.getBigUint64(12, false));
+  h.auxBlockSize = Number(dv.getBigUint64(20, false));
+  h.algorithmType = dv.getUint32(28, false);
+  h.hashOffset = Number(dv.getBigUint64(32, false));
+  h.hashSize = Number(dv.getBigUint64(40, false));
+  h.sigOffset = Number(dv.getBigUint64(48, false));
+  h.sigSize = Number(dv.getBigUint64(56, false));
+  h.descOffset = Number(dv.getBigUint64(96, false));
+  h.descSize = Number(dv.getBigUint64(104, false));
+  h.release = new TextDecoder().decode(vbmeta.subarray(128,176)).split('\0')[0];
+  const authStart = AVB_HEADER_SIZE;
+  const auxStart = authStart + h.authBlockSize;
+  h.hash = vbmeta.subarray(authStart+h.hashOffset, authStart+h.hashOffset+h.hashSize);
+  h.signature = vbmeta.subarray(authStart+h.sigOffset, authStart+h.sigOffset+h.sigSize);
+  h.dataToSign = concatBytes([vbmeta.subarray(0, authStart), vbmeta.subarray(auxStart, auxStart+h.auxBlockSize)]);
+  const descBlob = vbmeta.subarray(auxStart+h.descOffset, auxStart+h.descOffset+h.descSize);
+  const descriptors = [];
+  let p = 0;
+  const ddv = new DataView(descBlob.buffer, descBlob.byteOffset, descBlob.length);
+  while (p + 16 <= descBlob.length){
+    const tag = Number(ddv.getBigUint64(p, false));
+    const nbf = Number(ddv.getBigUint64(p+8, false));
+    const body = descBlob.subarray(p+16, p+16+nbf);
+    if (tag === 2 && body.length >= 116){
+      const bdv = new DataView(body.buffer, body.byteOffset, body.length);
+      const imageSize = Number(bdv.getBigUint64(0, false));
+      const pnl = bdv.getUint32(40, false), sl = bdv.getUint32(44, false), dl = bdv.getUint32(48, false);
+      const off = 116;
+      const pname = new TextDecoder().decode(body.subarray(off, off+pnl));
+      const salt = body.subarray(off+pnl, off+pnl+sl);
+      const digest = body.subarray(off+pnl+sl, off+pnl+sl+dl);
+      descriptors.push({ partitionName: pname, imageSize, salt: toHex(salt), digest: toHex(digest) });
+    }
+    p += 16 + nbf;
+  }
+  h.descriptors = descriptors;
+  return h;
+}
+async function avbVerifyImage(buf, pubKey){
+  const footer = avbParseFooter(buf);
+  if (!footer) return { ok:false, reason:'no AVB footer found' };
+  const vbmeta = buf.subarray(footer.vbmetaOffset, footer.vbmetaOffset + footer.vbmetaSize);
+  const h = avbParseVbmeta(vbmeta);
+  if (!h) return { ok:false, reason:'vbmeta magic mismatch' };
+
+  const checks = {};
+  const computedHashBuf = await crypto.subtle.digest('SHA-256', h.dataToSign);
+  checks['vbmeta_hash_matches'] = toHex(new Uint8Array(computedHashBuf)) === toHex(h.hash);
+
+  if (pubKey){
+    try{
+      checks['signature_valid_for_given_pubkey'] = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', pubKey, h.signature, h.dataToSign);
+    }catch(e){ checks['signature_valid_for_given_pubkey'] = false; }
+  } else {
+    checks['signature_valid_for_given_pubkey'] = null;
+  }
+
+  const image = buf.subarray(0, footer.originalImageSize);
+  for (const d of h.descriptors){
+    const salt = hexToBytes(d.salt);
+    const digestBuf = await crypto.subtle.digest('SHA-256', concatBytes([salt, image]));
+    checks[`image_matches_descriptor[${d.partitionName}]`] = toHex(new Uint8Array(digestBuf)) === d.digest;
+  }
+  const ok = Object.values(checks).every(v => v !== false);
+  return { ok, footer, vbmeta: h, checks };
+}
+function hexToBytes(hex){
+  const out = new Uint8Array(hex.length/2);
+  for (let i=0;i<out.length;i++) out[i] = parseInt(hex.substr(i*2,2),16);
+  return out;
+}
+
+/* ---- AVB tab UI ---- */
+let avbKeypair = null; // { privateKey, publicKey } from generateKey, or imported
+async function renderAvb(){
+  const el = document.getElementById('panel-avb');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="card">
+      <h3>sign (AVB hash-footer)</h3>
+      <div class="flexrow" style="margin-bottom:10px;">
+        <select id="avbAlgoSel" style="background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:6px 10px; font-family:var(--mono); font-size:12.5px;">
+          <option value="SHA256_RSA2048">SHA256_RSA2048</option>
+          <option value="SHA256_RSA4096">SHA256_RSA4096</option>
+        </select>
+        <input id="avbPartName" value="boot" style="background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:6px 10px; font-family:var(--mono); font-size:12.5px; width:120px;">
+        <button onclick="avbDoGenKey()">generate new key</button>
+        <label class="filebtn"><button onclick="this.nextElementSibling.click()">import private key (.pem)</button><input type="file" style="display:none" onchange="avbDoImportKey(this.files[0])"></label>
+      </div>
+      <div id="avbKeyStatus" class="mono-small">no key loaded — generate or import one to sign</div>
+      <div class="flexrow" style="margin-top:10px;">
+        <button class="primary" onclick="avbDoSign()">sign whole loaded image</button>
+      </div>
+      <div id="avbSignResult"></div>
+      <small class="note">This signs the file exactly as currently loaded (post-repack, if you built one). A device only accepts this signature if its AVB trust store points at this key's public half — generating a key here does not make it match any real device's factory key.</small>
+    </div>
+    <div class="card">
+      <h3>verify</h3>
+      <div class="flexrow">
+        <label class="filebtn"><button onclick="this.nextElementSibling.click()">check loaded image against a public key (.pem)</button><input type="file" style="display:none" onchange="avbDoVerify(this.files[0])"></label>
+        <button onclick="avbDoVerify(null)">check structure only (no key)</button>
+      </div>
+      <div id="avbVerifyResult"></div>
+    </div>`;
+}
+async function avbDoGenKey(){
+  const bits = document.getElementById('avbAlgoSel').value === 'SHA256_RSA4096' ? 4096 : 2048;
+  log(`generating ${bits}-bit RSA key…`);
+  const kp = await avbGenKey(bits);
+  avbKeypair = kp;
+  const pem = await avbExportPrivatePem(kp.privateKey);
+  document.getElementById('avbKeyStatus').innerHTML = `key ready (${bits}-bit). <button onclick='avbDownloadKey(${JSON.stringify(pem)})'>download private key .pem</button>`;
+  log('key generated', 'ok');
+}
+function avbDownloadKey(pem){
+  const blob = new Blob([pem], {type:'application/x-pem-file'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'aik-browser-key.pem';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+async function avbDoImportKey(file){
+  const pem = await file.text();
+  const priv = await avbImportPrivateFromPem(pem);
+  const jwk = await crypto.subtle.exportKey('jwk', priv);
+  delete jwk.d; delete jwk.p; delete jwk.q; delete jwk.dp; delete jwk.dq; delete jwk.qi;
+  jwk.key_ops = ['verify'];
+  const pub = await crypto.subtle.importKey('jwk', jwk, { name:'RSASSA-PKCS1-v1_5', hash:'SHA-256' }, true, ['verify']);
+  avbKeypair = { privateKey: priv, publicKey: pub };
+  document.getElementById('avbKeyStatus').textContent = `imported key from ${file.name}`;
+  log(`imported private key from ${file.name}`, 'ok');
+}
+async function avbDoSign(){
+  if (!avbKeypair){ alert('generate or import a key first'); return; }
+  if (!state.raw){ alert('load an image first'); return; }
+  const algo = document.getElementById('avbAlgoSel').value;
+  const partName = document.getElementById('avbPartName').value || 'boot';
+  const imageBytes = state._repackedBytes || new Uint8Array(state.raw);
+  log(`signing ${fmtBytes(imageBytes.length)} as partition "${partName}" with ${algo}…`);
+  try{
+    const { bytes, meta } = await avbSignImage(imageBytes, avbKeypair.privateKey, avbKeypair.publicKey, partName, algo);
+    state._avbSignedBytes = bytes;
+    document.getElementById('avbSignResult').innerHTML = `
+      <div class="card" style="margin-top:10px;">
+        <div class="kv">
+          <div class="k">partition size</div><div class="v">${fmtBytes(meta.partitionSize)}</div>
+          <div class="k">vbmeta offset</div><div class="v">0x${meta.vbmetaOffset.toString(16)}</div>
+          <div class="k">salt</div><div class="v">${meta.salt}</div>
+          <div class="k">digest (sha256)</div><div class="v">${meta.digest}</div>
+        </div>
+        <div class="flexrow" style="margin-top:10px;"><button class="primary" onclick="avbDownloadSigned()">download signed image</button></div>
+      </div>`;
+    log('signed successfully', 'ok');
+  }catch(e){
+    log('signing failed: '+e.message, 'err');
+  }
+}
+function avbDownloadSigned(){
+  const base = (state.filename||'image').replace(/\.[^.]+$/,'');
+  download(state._avbSignedBytes, `${base}-signed.img`);
+}
+async function avbDoVerify(file){
+  if (!state.raw){ alert('load an image first'); return; }
+  const buf = new Uint8Array(state._avbSignedBytes || state._repackedBytes || state.raw);
+  let pubKey = null;
+  if (file){
+    const pem = await file.text();
+    try{ pubKey = await avbImportPublicFromPem(pem); }
+    catch(e){
+      const priv = await avbImportPrivateFromPem(pem);
+      const jwk = await crypto.subtle.exportKey('jwk', priv);
+      delete jwk.d; delete jwk.p; delete jwk.q; delete jwk.dp; delete jwk.dq; delete jwk.qi; jwk.key_ops=['verify'];
+      pubKey = await crypto.subtle.importKey('jwk', jwk, { name:'RSASSA-PKCS1-v1_5', hash:'SHA-256' }, true, ['verify']);
+    }
+  }
+  const result = await avbVerifyImage(buf, pubKey);
+  const resEl = document.getElementById('avbVerifyResult');
+  if (!result.ok && result.reason){
+    resEl.innerHTML = `<div class="errbox" style="margin-top:10px;">${result.reason}</div>`;
+    return;
+  }
+  let rows = '';
+  for (const [k,v] of Object.entries(result.checks)){
+    const label = v === null ? 'SKIPPED' : (v ? 'OK' : 'FAILED');
+    rows += `<div class="kv"><div class="k">${label}${v===false?' ⚠':''}</div><div class="v">${k}</div></div>`;
+  }
+  resEl.innerHTML = `<div class="card" style="margin-top:10px;">
+    <div class="kv"><div class="k">algorithm</div><div class="v">${Object.entries(AVB_ALGORITHMS).find(([n,a])=>a[0]===result.vbmeta.algorithmType)?.[0] || result.vbmeta.algorithmType}</div></div>
+    ${rows}
+    <div style="margin-top:8px; font-weight:700; color:${result.ok?'var(--green)':'var(--red)'}">${result.ok ? 'overall: OK' : 'overall: FAILED'}</div>
+  </div>`;
+}
+
+/* ============================== diff mode ============================== */
+let diffState = { other: null }; // { filename, raw, kind, header, sections, secOrder }
+
+function parseImageGeneric(buf){
+  let parsed = parseBootHeader(buf);
+  if (!parsed) parsed = parseVendorBootHeader(buf);
+  if (!parsed) return null;
+  const u8 = new Uint8Array(buf);
+  const sections = {};
+  for (const s of parsed.secs){
+    if (s.size === 0) continue;
+    const bytes = u8.subarray(s.offset, s.offset + s.size);
+    sections[s.name] = { ...s, bytes, compression: detectCompression(bytes) };
+  }
+  return { kind: parsed.kind, header: parsed.h, sections, secOrder: parsed.secs.map(s=>s.name) };
+}
+
+function renderDiff(){
+  const el = document.getElementById('panel-diff');
+  if (!state.raw){
+    el.innerHTML = `<div class="card"><div class="empty">load an image first (drop it in above), then load a second one here to compare</div></div>`;
+    return;
+  }
+  let secondCard;
+  if (!diffState.other){
+    secondCard = `
+      <div class="card">
+        <h3>second image</h3>
+        <div class="drop" style="margin-bottom:0;" onclick="document.getElementById('diffFileInput').click()"
+             ondragover="event.preventDefault(); this.classList.add('drag')" ondragleave="this.classList.remove('drag')"
+             ondrop="event.preventDefault(); this.classList.remove('drag'); diffLoadOther(event.dataTransfer.files[0])">
+          <div class="main">Drop a second image to compare against "${state.filename}"</div>
+        </div>
+        <input type="file" id="diffFileInput" style="display:none" onchange="diffLoadOther(this.files[0])">
+      </div>`;
+    el.innerHTML = secondCard;
+    return;
+  }
+
+  const a = { filename: state.filename, kind: state.kind, header: state.header, sections: state.sections };
+  const b = diffState.other;
+
+  let headerRows = '';
+  const keys = new Set([...Object.keys(a.header||{}), ...Object.keys(b.header||{})]);
+  for (const k of keys){
+    const va = a.header[k], vb = b.header[k];
+    if (JSON.stringify(va) !== JSON.stringify(vb)){
+      headerRows += `<div class="kv"><div class="k">${k}</div><div class="v"><span style="color:var(--red);">${va}</span> &rarr; <span style="color:var(--green);">${vb}</span></div></div>`;
+    }
+  }
+
+  let secRows = '';
+  const secNames = new Set([...Object.keys(a.sections), ...Object.keys(b.sections)]);
+  for (const name of secNames){
+    const sa = a.sections[name], sb = b.sections[name];
+    if (!sa){ secRows += `<div class="sec"><div class="name">${name}</div><div class="meta">only in ${b_name()}  (${fmtBytes(sb.size)})</div></div>`; continue; }
+    if (!sb){ secRows += `<div class="sec"><div class="name">${name}</div><div class="meta">only in ${state.filename}  (${fmtBytes(sa.size)})</div></div>`; continue; }
+    const same = sa.size === sb.size && bytesEqual(sa.bytes, sb.bytes);
+    if (same){
+      secRows += `<div class="sec"><div class="name">${name}</div><div class="meta">identical (${fmtBytes(sa.size)})</div></div>`;
+    } else {
+      secRows += `<div class="sec"><div class="name">${name} <span class="badge amber">changed</span></div><div class="meta">${fmtBytes(sa.size)} &rarr; ${fmtBytes(sb.size)}  (${sa.compression} &rarr; ${sb.compression})</div></div>`;
+    }
+  }
+  function b_name(){ return diffState.other.filename; }
+
+  el.innerHTML = `
+    <div class="card">
+      <h3>comparing</h3>
+      <div class="kv">
+        <div class="k">A</div><div class="v">${state.filename}</div>
+        <div class="k">B</div><div class="v">${diffState.other.filename}</div>
+      </div>
+      <div class="flexrow" style="margin-top:10px;"><button onclick="diffState.other=null; renderDiff();">choose a different B</button></div>
+    </div>
+    <div class="card">
+      <h3>header differences</h3>
+      ${headerRows || '<div class="empty">headers identical</div>'}
+    </div>
+    <div class="card">
+      <h3>sections</h3>
+      <div class="seclist">${secRows}</div>
+    </div>`;
+}
+function bytesEqual(a, b){
+  if (a.length !== b.length) return false;
+  for (let i=0;i<a.length;i++) if (a[i]!==b[i]) return false;
+  return true;
+}
+async function diffLoadOther(file){
+  if (!file) return;
+  log(`diff: reading ${file.name}…`);
+  const buf = await file.arrayBuffer();
+  const parsed = parseImageGeneric(buf);
+  if (!parsed){
+    alert('Not a recognized boot/vendor_boot image.');
+    return;
+  }
+  diffState.other = { filename: file.name, ...parsed };
+  log(`diff: loaded ${file.name} for comparison`, 'ok');
+  renderDiff();
+}
+
+/* ============================== batch mode ============================== */
+let batchState = { images: [] }; // [{filename, kind, header, sections}]
+
+function renderBatch(){
+  const el = document.getElementById('panel-batch');
+  let rows = '';
+  batchState.images.forEach((img, i) => {
+    const h = img.header;
+    rows += `<tr>
+      <td>${img.filename}</td>
+      <td class="mono-small">${img.kind}</td>
+      <td class="mono-small">${h.header_version}</td>
+      <td class="mono-small">${fmtBytes(h.page_size)}</td>
+      <td class="mono-small">${fmtBytes(Object.values(img.sections).reduce((s,x)=>s+x.size,0))}</td>
+      <td class="mono-small">${(h.cmdline||'').slice(0,40)}${(h.cmdline||'').length>40?'…':''}</td>
+      <td><button class="danger" onclick="batchState.images.splice(${i},1); renderBatch();">remove</button></td>
+    </tr>`;
+  });
+  el.innerHTML = `
+    <div class="card">
+      <h3>batch — compare multiple images at a glance</h3>
+      <div class="drop" style="margin-bottom:12px;" onclick="document.getElementById('batchFileInput').click()"
+           ondragover="event.preventDefault(); this.classList.add('drag')" ondragleave="this.classList.remove('drag')"
+           ondrop="event.preventDefault(); this.classList.remove('drag'); batchLoadFiles(event.dataTransfer.files)">
+        <div class="main">Drop multiple images here to add them to the table</div>
+      </div>
+      <input type="file" id="batchFileInput" multiple style="display:none" onchange="batchLoadFiles(this.files)">
+      ${batchState.images.length ? `
+        <div style="max-height:400px; overflow-y:auto;">
+          <table>
+            <thead><tr><th>file</th><th>format</th><th>hdr v</th><th>page</th><th>total size</th><th>cmdline</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>` : '<div class="empty">no images added yet</div>'}
+    </div>`;
+}
+async function batchLoadFiles(fileList){
+  for (const file of fileList){
+    log(`batch: reading ${file.name}…`);
+    const buf = await file.arrayBuffer();
+    const parsed = parseImageGeneric(buf);
+    if (!parsed){
+      log(`batch: ${file.name} — not a recognized image, skipped`, 'warn');
+      continue;
+    }
+    batchState.images.push({ filename: file.name, ...parsed });
+  }
+  log(`batch: ${batchState.images.length} image(s) loaded`, 'ok');
+  renderBatch();
+}
+
+/* ============================== fstab / build.prop text editor ============================== */
+function looksLikeTextConfig(name){
+  const base = name.split('/').pop() || '';
+  return base === 'default.prop' || base.endsWith('.prop') || base === 'fstab' || base.startsWith('fstab.') || base.endsWith('.rc');
+}
+function validateConfigText(name, text){
+  const base = name.split('/').pop() || '';
+  const warnings = [];
+  const lines = text.split('\n');
+  if (base.endsWith('.prop')){
+    lines.forEach((line, i) => {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) return;
+      if (!/^[A-Za-z0-9_.\-]+\s*=/.test(t)) warnings.push(`line ${i+1}: doesn't look like key=value — "${t.slice(0,40)}"`);
+    });
+  } else if (base === 'fstab' || base.startsWith('fstab.')){
+    lines.forEach((line, i) => {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) return;
+      const cols = t.split(/\s+/);
+      if (cols.length < 5) warnings.push(`line ${i+1}: expected 5 whitespace-separated fields (device, mount point, fstype, mount flags, fs_mgr flags), got ${cols.length}`);
+    });
+  }
+  return warnings;
+}
+function openTextEditorFor(entryIndex){
+  const e = state.cpioEntries[entryIndex];
+  const buf = state.cpioPlainBuffer;
+  const bytes = e._replacement || new Uint8Array(buf.buffer, buf.byteOffset+e.dataStart, e.size);
+  const text = new TextDecoder().decode(bytes);
+  const modalId = 'textEditModal';
+  let modal = document.getElementById(modalId);
+  if (modal) modal.remove();
+  modal = document.createElement('div');
+  modal.id = modalId;
+  modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:1000; display:flex; align-items:center; justify-content:center; padding:20px;';
+  modal.innerHTML = `
+    <div style="background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; max-width:700px; width:100%; max-height:85vh; display:flex; flex-direction:column;">
+      <h3 style="margin-bottom:10px;">editing ${e.name}</h3>
+      <textarea id="textEditArea" style="flex:1; min-height:300px; background:#000; color:var(--text); border:1px solid var(--line); border-radius:4px; padding:10px; font-family:var(--mono); font-size:12.5px; resize:vertical;">${text.replace(/</g,'&lt;')}</textarea>
+      <div id="textEditWarnings" style="margin-top:8px;"></div>
+      <div class="flexrow" style="margin-top:12px;">
+        <button class="primary" onclick="saveTextEdit(${entryIndex})">save</button>
+        <button onclick="document.getElementById('${modalId}').remove()">cancel</button>
+        <span class="grow"></span>
+        <span class="mono-small" id="textEditValidateStatus"></span>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const runValidate = () => {
+    const warnings = validateConfigText(e.name, document.getElementById('textEditArea').value);
+    const wEl = document.getElementById('textEditWarnings');
+    wEl.innerHTML = warnings.length
+      ? `<div class="warnbox">${warnings.map(w=>w).join('<br>')}</div>`
+      : '';
+    document.getElementById('textEditValidateStatus').textContent = warnings.length ? `${warnings.length} warning(s)` : 'looks OK';
+  };
+  document.getElementById('textEditArea').addEventListener('input', runValidate);
+  runValidate();
+}
+function saveTextEdit(entryIndex){
+  const text = document.getElementById('textEditArea').value;
+  const bytes = new TextEncoder().encode(text);
+  state.cpioEntries[entryIndex]._replacement = bytes;
+  state.cpioEntries[entryIndex].size = bytes.length;
+  document.getElementById('textEditModal').remove();
+  log(`edited "${state.cpioEntries[entryIndex].name}" as text (${fmtBytes(bytes.length)})`, 'ok');
+  renderRamdisk();
+}
+
+/* ============================== session persistence (IndexedDB) ============================== */
+const SESSION_DB = 'aik-browser-session';
+function idbOpen(){
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(SESSION_DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('files');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function saveSession(){
+  try{
+    if (!state.raw) return;
+    const db = await idbOpen();
+    const tx = db.transaction('files', 'readwrite');
+    tx.objectStore('files').put({ filename: state.filename, raw: state.raw, savedAt: Date.now() }, 'last');
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+  }catch(e){ /* best-effort only */ }
+}
+async function loadSessionRecord(){
+  try{
+    const db = await idbOpen();
+    const tx = db.transaction('files', 'readonly');
+    const req = tx.objectStore('files').get('last');
+    return await new Promise((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+  }catch(e){ return null; }
+}
+async function checkForSavedSession(){
+  const rec = await loadSessionRecord();
+  if (!rec || !rec.raw) return;
+  const banner = document.createElement('div');
+  banner.className = 'card';
+  banner.style.cssText = 'border-color:var(--green-dim);';
+  banner.innerHTML = `
+    <div class="flexrow">
+      <div class="grow mono-small">Found a previous session: <b style="color:var(--text)">${rec.filename}</b> (${fmtBytes(rec.raw.byteLength)}) — restore the source file? Edits from that session are not saved, only the original upload.</div>
+      <button class="primary" onclick="restoreSession()">restore</button>
+      <button onclick="this.closest('.card').remove()">dismiss</button>
+    </div>`;
+  document.querySelector('.wrap').insertBefore(banner, document.getElementById('drop'));
+  window._pendingSessionRecord = rec;
+}
+async function restoreSession(){
+  const rec = window._pendingSessionRecord || await loadSessionRecord();
+  if (!rec) return;
+  const file = new File([rec.raw], rec.filename);
+  document.querySelectorAll('.card').forEach(c => { if (c.textContent.includes('Found a previous session')) c.remove(); });
+  await loadFile(file);
+}
+checkForSavedSession();
+
+
 </script>
 </body>
 </html>
+
