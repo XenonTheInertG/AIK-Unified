@@ -2,7 +2,7 @@
 
 **Android Image Kitchen In Browser** — unpack and repack Android `boot.img`, `recovery.img`, and `vendor_boot.img` files. Three tools, one shared format implementation: a browser app, a Python CLI, and a shell wrapper.
 
-Supports boot image header versions v0–v4 and vendor_boot v3–v4 (legacy devices through modern GKI).
+Supports boot image header versions v0–v4 and vendor_boot v3–v4 (legacy devices through modern GKI). **v1.1.0** adds AVB signing/verification, a diff mode, batch processing, and more — see [What's new](#whats-new-in-v110) below.
 
 ---
 
@@ -10,9 +10,9 @@ Supports boot image header versions v0–v4 and vendor_boot v3–v4 (legacy devi
 
 | File | What it is | Requirements |
 |---|---|---|
-| [`aik-browser.html`](./aik-browser.html) | Single-file web app — drag, drop, unpack, edit, repack | Any modern browser, no install |
-| [`aik.py`](./aik.py) | Command-line unpack/repack | Python 3, stdlib only (optional `lz4` package) |
-| [`aik.sh`](./aik.sh) | Shell wrapper around `aik.py` with a familiar unpack/repack workflow | `bash`, `python3` |
+| [`aik-browser.html`](./aik-browser.html) | Single-file web app — drag, drop, unpack, edit, repack, sign | Any modern browser, no install |
+| [`aik.py`](./aik.py) | Command-line unpack/repack/sign/diff | Python 3, stdlib only (optional `lz4`, `cryptography`) |
+| [`aik.sh`](./aik.sh) | Shell wrapper around `aik.py`, plus batch processing | `bash`, `python3` |
 
 <p align="center">
   <img src="./aik-py-demo.png" width="640" alt="aik.py running info, unpack, and repack against a boot.img">
@@ -22,6 +22,29 @@ Supports boot image header versions v0–v4 and vendor_boot v3–v4 (legacy devi
   <img src="./aik-sh-demo.png" width="640" alt="aik.sh running the same workflow">
   <br><em>aik.sh</em>
 </p>
+
+---
+
+## What's new in v1.1.0
+
+**All three tools:**
+- **AVB (Android Verified Boot) signing and verification** — `sign` / `verify-sig` (CLI) and the **avb** tab (browser). Generates or imports an RSA key, builds a spec-accurate vbmeta + hash-footer (SHA256_RSA2048/4096), and verifies signatures, hashes, and tamper status. The Python and browser implementations were cross-validated to sign in one and verify in the other, in both directions, with matching results.
+- **`diff`** — compares two images: header fields, section hashes/sizes, and file-by-file ramdisk contents (added/removed/modified).
+- **`--verify`** on repack — re-parses the output afterward and confirms every section round-tripped correctly.
+- **bzip2** support (compress and decompress), on top of the existing gzip/xz/lz4 — no extra dependency needed, it's Python/browser stdlib.
+
+**AIK-Browser only:**
+- **Hex viewer** — paginated hex/ASCII dump of any section's raw bytes.
+- **DTB inspector** — parses the flattened device tree blob (FDT) format and displays it as a browsable node/property tree, for `dtb` and `recovery_dtbo` sections.
+- **fstab / \*.prop editor** — recognized config files in the ramdisk (`default.prop`, `*.prop`, `fstab*`) get an "edit as text" option with live syntax warnings (key=value shape, expected fstab column count) instead of raw binary upload/download.
+- **Diff tab** — load a second image and compare it against the loaded one, right in the browser.
+- **Batch tab** — drop several images at once and see a comparison table (format, header version, page size, total size, cmdline).
+- **Session persistence** — the last-loaded file is cached in IndexedDB; reopening the page offers to restore it (the source file only, not in-progress edits).
+
+**aik.sh only:**
+- **`batch-unpack`** / **`batch-repack`** — process a whole directory of images in one command.
+- **`.aikrc`** config file (project-local or `~/.aikrc`) for default paths.
+- **`sign`** / **`verify`** / **`diff`** passthrough subcommands.
 
 ---
 
@@ -123,8 +146,8 @@ Sections you don't touch are always carried through byte-for-byte on repack, reg
 
 ## Known limitations
 
-- **AVB / verified boot:** a repacked image is unsigned. If the source image had an AVB footer, all three tools warn about it — re-sign the output yourself with `avbtool` if the device needs verified boot to pass.
-- **xz / bzip2 ramdisks:** can be extracted as raw bytes but not decompressed for browsing/editing in-browser; the CLI has the same limit unless you decompress them externally first.
+- **AVB / verified boot:** signing is now supported (see above), but a key generated or imported here is only trusted by a device if that device's AVB trust store has actually been repointed at its public half — e.g. via a custom bootloader or vbmeta digest override on an unlocked device. It will never match a real device's factory verified-boot key. The implementation has been cross-validated between the Python and browser versions (sign in one, verify in the other, both directions) and tested against tampering and wrong-key scenarios, but has not been tested against a real device's bootloader/libavb.
+- **xz / bzip2 ramdisks:** xz can be extracted as raw bytes but not decompressed for browsing/editing in-browser or via the CLI; bzip2 is now fully supported (extract, browse, edit, recompress) in both.
 - **OEM header variants:** Samsung, some MediaTek, and other vendor-specific formats that diverge from AOSP's `bootimg.h` aren't handled.
 - **Very large images on low-memory devices:** the browser app holds the whole image in memory; this can be slow on older phones with multi-hundred-MB images.
 
@@ -136,6 +159,3 @@ All three tools implement the same format logic independently in their respectiv
 
 ---
 
-## License
-
-Add a license of your choice here (MIT is a common pick for tooling like this).
