@@ -1,6 +1,7 @@
+
 #!/usr/bin/env python3
 """
-aik.py -- Android Image Kitchen (command-line)   v1.1.0
+aik.py -- Android Image Kitchen (command-line)   v1.2.0
 
 Unpacks and repacks Android boot / recovery / vendor_boot images.
 Supports boot image header v0-v4 and vendor_boot header v3-v4.
@@ -29,14 +30,19 @@ Typical workflow:
   aik.py repack work/ -o boot-new.img --verify
   aik.py sign boot-new.img --gen-key mykey.pem -o boot-new-signed.img
   aik.py verify-sig boot-new-signed.img --key mykey.pem
+
+Also available: extract-config, strings, dtbo-table, scan-root, export-patch,
+apply-patch -- run `aik.py --help` or `aik.py <command> --help` for details.
 """
 
 import argparse
+import base64
 import bz2
 import gzip
 import hashlib
 import json
 import lzma
+import re
 import os
 import struct
 import sys
@@ -48,7 +54,7 @@ try:
 except ImportError:
     HAVE_LZ4 = False
 
-AIK_VERSION = "1.1.0"
+AIK_VERSION = "1.2.0"
 
 
 # --------------------------------------------------------------------------
@@ -562,6 +568,7 @@ def avb_parse_vbmeta(vbmeta):
     h["public_key_size"] = struct.unpack_from(">Q", vbmeta, 72)[0]
     h["descriptors_offset"] = struct.unpack_from(">Q", vbmeta, 96)[0]
     h["descriptors_size"] = struct.unpack_from(">Q", vbmeta, 104)[0]
+    h["rollback_index"] = struct.unpack_from(">Q", vbmeta, 112)[0]
     h["release_string"] = vbmeta[128:176].split(b"\x00", 1)[0].decode("utf-8", "replace")
 
     auth_start = AVB_HEADER_SIZE
@@ -721,8 +728,6 @@ def cmd_unpack(args):
                     # symlinks / device nodes / fifo / socket are recorded in the
                     # index but not materialized on disk (not all host filesystems
                     # support them faithfully) -- repack restores them from the index.
-                with open(os.path.join(rd_dir, "..", f"{name}.index.json").replace("../", ""), "w") as f:
-                    pass  # placeholder to keep path simple below
                 with open(os.path.join(outdir, f"{name}.index.json"), "w") as f:
                     json.dump(index, f, indent=2)
                 print(f"  extracted {len(entries)} entries -> {rd_dir}/  (index: {name}.index.json)")
@@ -1084,6 +1089,8 @@ def cmd_verify_sig(args):
     v = result["vbmeta"]
     print(f"algorithm       : {[k for k, val in AVB_ALGORITHMS.items() if val[0] == v['algorithm_type']] or v['algorithm_type']}")
     print(f"release string  : {v['release_string']}")
+    print(f"rollback_index  : {v['rollback_index']}"
+          + ("  (0 -- flashing an OLDER signed image than whatever set this device's stored index may be blocked)" if v['rollback_index'] == 0 else ""))
     for d in v["descriptors"]:
         print(f"descriptor      : hash, partition={d['partition_name']!r}, image_size={d['image_size']}")
     print()
@@ -1097,6 +1104,376 @@ def cmd_verify_sig(args):
         print("overall: FAILED")
         sys.exit(1)
 
+
+
+# --------------------------------------------------------------------------
+# kernel config (IKCFG_PROC) extraction
+#
+# Kernels built with CONFIG_IKCFG_PROC embed their own .config, gzip'd,
+# between the literal markers b"IKCFG_ST" and b"IKCFG_ED".
+# --------------------------------------------------------------------------
+
+def find_ikcfg(kernel_bytes):
+    start_marker = b"IKCFG_ST"
+    end_marker = b"IKCFG_ED"
+    s = kernel_bytes.find(start_marker)
+    if s == -1:
+        return None
+    e = kernel_bytes.find(end_marker, s)
+    if e == -1:
+        return None
+    blob = kernel_bytes[s + len(start_marker):e]
+    try:
+        return gzip.decompress(blob)
+    except Exception:
+        return None
+
+
+def cmd_extract_config(args):
+    with open(args.image, "rb") as f:
+        buf = f.read()
+    parsed = parse_boot_header(buf) or parse_vendor_boot_header(buf)
+    if not parsed:
+        print("error: not a recognized boot/vendor_boot image", file=sys.stderr)
+        sys.exit(1)
+    kernel_sec = next(((n, o, s) for n, o, s in parsed["sections"] if n == "kernel"), None)
+    if not kernel_sec:
+        print("error: no kernel section in this image", file=sys.stderr)
+        sys.exit(1)
+    _, off, size = kernel_sec
+    kernel_bytes = buf[off:off + size]
+    config = find_ikcfg(kernel_bytes)
+    if config is None:
+        print("no embedded kernel config found (needs CONFIG_IKCFG_PROC; markers IKCFG_ST/IKCFG_ED not present)")
+        sys.exit(1)
+    output = args.output or (os.path.splitext(args.image)[0] + "-config.txt")
+    with open(output, "wb") as f:
+        f.write(config)
+    enabled = sum(1 for line in config.splitlines() if line.strip().endswith(b"=y"))
+    modules = sum(1 for line in config.splitlines() if line.strip().endswith(b"=m"))
+    print(f"wrote {output}  ({human(len(config))})")
+    print(f"  {enabled} options set 'y' (built-in), {modules} set 'm' (module)")
+
+
+# --------------------------------------------------------------------------
+# strings scan -- find printable ASCII runs in a section, with simple
+# categorization for lines that look like version/build banners.
+# --------------------------------------------------------------------------
+
+def extract_strings(data, min_len=6):
+    out = []
+    run = bytearray()
+    start = 0
+    for i, b in enumerate(data):
+        if 32 <= b < 127:
+            if not run:
+                start = i
+            run.append(b)
+        else:
+            if len(run) >= min_len:
+                out.append((start, bytes(run).decode("ascii")))
+            run = bytearray()
+    if len(run) >= min_len:
+        out.append((start, bytes(run).decode("ascii")))
+    return out
+
+
+VERSION_HINT_RE = re.compile(
+    r"(Linux version|gcc version|clang version|Android clang|Build fingerprint|SELinux|U-Boot)", re.I)
+
+
+def cmd_strings(args):
+    with open(args.image, "rb") as f:
+        buf = f.read()
+    parsed = parse_boot_header(buf) or parse_vendor_boot_header(buf)
+    if not parsed:
+        print("error: not a recognized boot/vendor_boot image", file=sys.stderr)
+        sys.exit(1)
+    sec = next(((n, o, s) for n, o, s in parsed["sections"] if n == args.section), None)
+    if not sec:
+        available = ", ".join(n for n, o, s in parsed["sections"] if s)
+        print(f"error: no section '{args.section}' in this image (available: {available})", file=sys.stderr)
+        sys.exit(1)
+    _, off, size = sec
+    data = buf[off:off + size]
+    strings = extract_strings(data, min_len=args.min_len)
+
+    highlights = [(o, s) for o, s in strings if VERSION_HINT_RE.search(s)]
+    if highlights:
+        print(f"-- {len(highlights)} version/build banner(s) --")
+        for o, s in highlights[:20]:
+            print(f"  0x{o:x}: {s}")
+        print()
+
+    print(f"-- {len(strings)} total strings (min length {args.min_len}) --")
+    shown = strings[:args.limit] if args.limit else strings
+    for o, s in shown:
+        print(f"  0x{o:x}: {s}")
+    if args.limit and len(strings) > args.limit:
+        print(f"  ... {len(strings) - args.limit} more (use --limit 0 for all)")
+
+
+# --------------------------------------------------------------------------
+# DTBO / multi-DTB table (dt_table_header) parsing
+#
+# Format per source.android.com "DTB and DTBO partitions": big-endian,
+# an 8-uint32 header followed by dt_entry_count 8-uint32 entries, each
+# pointing at one concatenated DTB/DTBO blob.
+# --------------------------------------------------------------------------
+
+DT_TABLE_MAGIC = 0xd7b7ab1e
+
+
+def parse_dtbo_table(buf):
+    if len(buf) < 32:
+        return None
+    magic, total_size, header_size, dt_entry_size, dt_entry_count, dt_entries_offset, page_size, version = \
+        struct.unpack_from(">8I", buf, 0)
+    if magic != DT_TABLE_MAGIC:
+        return None
+    entries = []
+    for i in range(dt_entry_count):
+        eoff = dt_entries_offset + i * dt_entry_size
+        dt_size, dt_offset, eid, rev, c0, c1, c2, c3 = struct.unpack_from(">8I", buf, eoff)
+        entries.append({"index": i, "dt_size": dt_size, "dt_offset": dt_offset, "id": eid, "rev": rev,
+                         "custom": [c0, c1, c2, c3]})
+    return {"total_size": total_size, "header_size": header_size, "page_size": page_size,
+            "version": version, "entries": entries}
+
+
+def cmd_dtbo_table(args):
+    with open(args.image, "rb") as f:
+        buf = f.read()
+    # allow pointing directly at a standalone dtbo.img, or at a boot/recovery
+    # image whose recovery_dtbo / dtb section holds the table
+    table = parse_dtbo_table(buf)
+    source_desc = args.image
+    if not table:
+        parsed = parse_boot_header(buf) or parse_vendor_boot_header(buf)
+        if parsed:
+            for name, off, size in parsed["sections"]:
+                if name in ("recovery_dtbo", "dtb") and size:
+                    candidate = parse_dtbo_table(buf[off:off + size])
+                    if candidate:
+                        table = candidate
+                        source_desc = f"{args.image} [{name}]"
+                        break
+    if not table:
+        print("error: no DT_TABLE_MAGIC header found (not a dtbo.img, and no table in recovery_dtbo/dtb)", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"source          : {source_desc}")
+    print(f"version         : {table['version']}")
+    print(f"page_size       : {table['page_size']}")
+    print(f"total_size      : {human(table['total_size'])}")
+    print(f"entries         : {len(table['entries'])}")
+    print()
+    for e in table["entries"]:
+        print(f"  [{e['index']}] id=0x{e['id']:08x} rev=0x{e['rev']:x}  offset=0x{e['dt_offset']:x}  size={human(e['dt_size'])}"
+              + (f"  custom={[hex(c) for c in e['custom']]}" if any(e["custom"]) else ""))
+
+
+# --------------------------------------------------------------------------
+# root / modification scanner -- recognizes common ramdisk signatures for
+# Magisk and KernelSU, and flags init.rc lines that look privilege-escalating.
+# Pattern-matching only; not a security guarantee, just a quick signal.
+# --------------------------------------------------------------------------
+
+MAGISK_SIGNATURES = [
+    "sbin/magisk", "system/bin/magisk", ".backup/.magisk", "init.magisk.rc",
+    "overlay.d/magisk", "magisk/magisk64", "magisk/magisk32",
+]
+KERNELSU_SIGNATURES = [
+    "overlay.d/sbin/ksud", "ksud", "init.ksu.rc", "system/bin/ksud",
+]
+
+INITRC_SUSPECT_RE = re.compile(r"seclabel\s+u:r:su:s0|setuid\s+0\b.*setgid\s+0\b|capabilities\s+\S*CAP_SYS_ADMIN")
+
+
+def cmd_scan_root(args):
+    with open(args.image, "rb") as f:
+        buf = f.read()
+    parsed = parse_boot_header(buf) or parse_vendor_boot_header(buf)
+    if not parsed:
+        print("error: not a recognized boot/vendor_boot image", file=sys.stderr)
+        sys.exit(1)
+
+    ramdisk_sec = next(((n, o, s) for n, o, s in parsed["sections"] if n in ("ramdisk", "vendor_ramdisk")), None)
+    if not ramdisk_sec:
+        print("no ramdisk section in this image")
+        return
+    name, off, size = ramdisk_sec
+    data = buf[off:off + size]
+    comp = detect_compression(data)
+    plain = data if comp == "cpio-newc" else decompress(data, comp)
+    if plain is None or detect_compression(plain) != "cpio-newc":
+        print(f"could not read {name} as a cpio archive (compression: {comp})")
+        return
+
+    entries = parse_cpio(plain)
+    names = [e["name"] for e in entries]
+    names_lower = [n.lower() for n in names]
+
+    magisk_hits = [n for n in names if any(sig in n.lower() for sig in MAGISK_SIGNATURES)]
+    kernelsu_hits = [n for n in names if any(sig in n.lower() for sig in KERNELSU_SIGNATURES)]
+    sepolicy_hits = [n for n in names if n.split("/")[-1] in ("sepolicy", "precompiled_sepolicy")]
+    initrc_files = [e for e in entries if e["name"].split("/")[-1].endswith(".rc")]
+
+    print(f"ramdisk         : {name} ({len(entries)} entries)")
+    print()
+    print(f"Magisk signatures   : {'FOUND' if magisk_hits else 'none'}")
+    for h in magisk_hits:
+        print(f"  - {h}")
+    print(f"KernelSU signatures : {'FOUND' if kernelsu_hits else 'none'}")
+    for h in kernelsu_hits:
+        print(f"  - {h}")
+    print(f"sepolicy file(s)    : {', '.join(sepolicy_hits) if sepolicy_hits else 'none found'}")
+    if sepolicy_hits:
+        for h in sepolicy_hits:
+            e = next(x for x in entries if x["name"] == h)
+            blob = plain[e["data_start"]:e["data_start"] + e["size"]]
+            print(f"    {h}: {human(len(blob))}" + _sepolicy_version_hint(blob))
+
+    print()
+    print(f"init*.rc files scanned : {len(initrc_files)}")
+    any_suspect = False
+    for e in initrc_files:
+        blob = plain[e["data_start"]:e["data_start"] + e["size"]]
+        try:
+            text = blob.decode("utf-8", "replace")
+        except Exception:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if INITRC_SUSPECT_RE.search(line):
+                any_suspect = True
+                print(f"  {e['name']}:{i}: {line.strip()}")
+    if not any_suspect:
+        print("  no lines matched the suspect patterns (seclabel u:r:su:s0, setuid/setgid 0 pairs, broad capabilities)")
+
+
+def _sepolicy_version_hint(blob):
+    # Binary policydb files start with a magic (0xf97cff8c, little-endian in
+    # the on-disk format) followed by a length-prefixed "SE Linux" string and
+    # a policy version integer. We only surface this version number -- a full
+    # rule decompile is out of scope here.
+    if len(blob) < 12 or struct.unpack_from("<I", blob, 0)[0] != 0xf97cff8c:
+        return ""
+    try:
+        str_len = struct.unpack_from("<I", blob, 4)[0]
+        if str_len > 64:
+            return ""
+        pos = 8 + str_len
+        policy_ver = struct.unpack_from("<I", blob, pos)[0]
+        return f"  (policydb version {policy_ver})"
+    except Exception:
+        return ""
+
+
+# --------------------------------------------------------------------------
+# patch export/apply -- captures the delta between a workdir's original
+# ramdisk index (written at unpack time) and its current ramdisk-extracted/
+# tree, as a portable JSON file. Applying it replays those same file-level
+# changes onto a fresh unpack of a compatible image. This is a manual,
+# user-triggered export of edits already made -- not a scripting system.
+# --------------------------------------------------------------------------
+
+def cmd_export_patch(args):
+    workdir = args.workdir
+    index_path = os.path.join(workdir, f"{args.ramdisk}.index.json")
+    extracted_dir = os.path.join(workdir, f"{args.ramdisk}-extracted")
+    if not os.path.isfile(index_path):
+        print(f"error: {index_path} not found", file=sys.stderr)
+        sys.exit(1)
+    with open(index_path) as f:
+        original_index = json.load(f)
+    original_names = {e["name"] for e in original_index}
+
+    current_files = set()
+    current_dirs = set()
+    for root, dirs, files in os.walk(extracted_dir):
+        for fn in files:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, extracted_dir).replace(os.sep, "/")
+            current_files.add(rel)
+        for dn in dirs:
+            full = os.path.join(root, dn)
+            rel = os.path.relpath(full, extracted_dir).replace(os.sep, "/")
+            current_dirs.add(rel)
+    # the extracted_dir itself represents the ramdisk's "." entry, if present
+    if os.path.isdir(extracted_dir):
+        current_dirs.add(".")
+
+    original_dir_names = {e["name"] for e in original_index if e.get("type") == "dir"}
+    original_file_names = original_names - original_dir_names
+
+    added = sorted(current_files - original_file_names)
+    removed_files = sorted(original_file_names - current_files)
+    removed_dirs = sorted(original_dir_names - current_dirs)
+
+    patch_entries = []
+    for name in added:
+        with open(os.path.join(extracted_dir, name), "rb") as f:
+            patch_entries.append({"op": "add", "name": name, "data": base64.b64encode(f.read()).decode()})
+    for name in sorted(current_files & original_file_names):
+        path = os.path.join(extracted_dir, name)
+        # we don't have the original bytes anymore (only the index metadata),
+        # so "modified" is reported, but content is always included -- cheap
+        # and correct even if we can't prove whether it actually changed.
+        with open(path, "rb") as f:
+            content = f.read()
+        patch_entries.append({"op": "set", "name": name, "data": base64.b64encode(content).decode()})
+    for name in removed_files + removed_dirs:
+        patch_entries.append({"op": "remove", "name": name})
+
+    patch = {"format": "aik-patch-v1", "ramdisk": args.ramdisk, "ops": patch_entries}
+    output = args.output or "patch.json"
+    with open(output, "w") as f:
+        json.dump(patch, f, indent=2)
+    print(f"wrote {output}  ({len(patch_entries)} ops: "
+          f"{sum(1 for o in patch_entries if o['op']=='add')} add, "
+          f"{sum(1 for o in patch_entries if o['op']=='set')} set/modified, "
+          f"{sum(1 for o in patch_entries if o['op']=='remove')} remove)")
+
+
+def cmd_apply_patch(args):
+    workdir = args.workdir
+    with open(args.patch) as f:
+        patch = json.load(f)
+    if patch.get("format") != "aik-patch-v1":
+        print("error: unrecognized patch format", file=sys.stderr)
+        sys.exit(1)
+    ramdisk = patch["ramdisk"]
+    extracted_dir = os.path.join(workdir, f"{ramdisk}-extracted")
+    index_path = os.path.join(workdir, f"{ramdisk}.index.json")
+    if not os.path.isdir(extracted_dir) or not os.path.isfile(index_path):
+        print(f"error: {workdir} doesn't have an unpacked '{ramdisk}' to apply this patch onto", file=sys.stderr)
+        sys.exit(1)
+    with open(index_path) as f:
+        index = json.load(f)
+    index_by_name = {e["name"]: e for e in index}
+
+    applied = {"add": 0, "set": 0, "remove": 0}
+    for op in patch["ops"]:
+        name = op["name"]
+        path = os.path.join(extracted_dir, name)
+        if op["op"] in ("add", "set"):
+            os.makedirs(os.path.dirname(path) or extracted_dir, exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(op["data"]))
+            if name not in index_by_name:
+                index.append({"name": name, "mode": 0o100644, "uid": 0, "gid": 0, "mtime": 0, "type": "file"})
+                index_by_name[name] = index[-1]
+            applied[op["op"]] += 1
+        elif op["op"] == "remove":
+            if os.path.isfile(path):
+                os.remove(path)
+            index[:] = [e for e in index if e["name"] != name]
+            applied["remove"] += 1
+
+    with open(index_path, "w") as f:
+        json.dump(index, f, indent=2)
+    print(f"applied patch to {workdir}: {applied['add']} added, {applied['set']} set, {applied['remove']} removed")
+    print(f"run `aik.py repack {workdir} -o <output.img>` to build the patched image")
 
 
 def main():
@@ -1141,6 +1518,37 @@ def main():
     p_verify.add_argument("--pubkey", default=None, help="public key PEM to verify the signature against")
     p_verify.add_argument("--key", default=None, help="private key PEM (its public half is used to verify)")
     p_verify.set_defaults(func=cmd_verify_sig)
+
+    p_config = sub.add_parser("extract-config", help="extract an embedded kernel .config (CONFIG_IKCFG_PROC)")
+    p_config.add_argument("image")
+    p_config.add_argument("-o", "--output", default=None)
+    p_config.set_defaults(func=cmd_extract_config)
+
+    p_strings = sub.add_parser("strings", help="scan a section for printable strings, highlighting version/build banners")
+    p_strings.add_argument("image")
+    p_strings.add_argument("--section", default="kernel")
+    p_strings.add_argument("--min-len", type=int, default=6)
+    p_strings.add_argument("--limit", type=int, default=200, help="0 for unlimited")
+    p_strings.set_defaults(func=cmd_strings)
+
+    p_dtbo = sub.add_parser("dtbo-table", help="parse a dt_table_header (dtbo.img, or recovery_dtbo/dtb holding one)")
+    p_dtbo.add_argument("image")
+    p_dtbo.set_defaults(func=cmd_dtbo_table)
+
+    p_scanroot = sub.add_parser("scan-root", help="flag Magisk/KernelSU signatures and suspicious init.rc lines in the ramdisk")
+    p_scanroot.add_argument("image")
+    p_scanroot.set_defaults(func=cmd_scan_root)
+
+    p_exportpatch = sub.add_parser("export-patch", help="export ramdisk edits in a workdir as a portable JSON patch")
+    p_exportpatch.add_argument("workdir")
+    p_exportpatch.add_argument("-o", "--output", default=None)
+    p_exportpatch.add_argument("--ramdisk", default="ramdisk", help="which ramdisk (default: ramdisk)")
+    p_exportpatch.set_defaults(func=cmd_export_patch)
+
+    p_applypatch = sub.add_parser("apply-patch", help="apply a JSON patch onto a freshly unpacked workdir")
+    p_applypatch.add_argument("workdir")
+    p_applypatch.add_argument("patch")
+    p_applypatch.set_defaults(func=cmd_apply_patch)
 
     args = p.parse_args()
     args.func(args)
