@@ -118,7 +118,7 @@
   <div class="top">
     <div class="brand"><span class="prompt">&gt;</span> Android Image Kitchen In Browser <span class="abbr dim">(AIK-Browser)</span></div>
     <div class="badge" id="libStatus">loading libs…</div>
-    <div class="badge">v1.1.0</div>
+    <div class="badge">v1.2.0</div>
   </div>
   <div class="sub">Unpack &amp; repack Android boot.img / recovery.img / vendor_boot.img — entirely in your browser. Nothing is uploaded anywhere.</div>
 
@@ -141,6 +141,7 @@
       <div class="tab" data-tab="avb">avb</div>
       <div class="tab" data-tab="diff">diff</div>
       <div class="tab" data-tab="batch">batch</div>
+      <div class="tab" data-tab="analyze">analyze</div>
       <div class="tab" data-tab="repack">repack</div>
     </div>
 
@@ -152,6 +153,7 @@
     <div class="panel" id="panel-avb"></div>
     <div class="panel" id="panel-diff"></div>
     <div class="panel" id="panel-batch"></div>
+    <div class="panel" id="panel-analyze"></div>
     <div class="panel" id="panel-repack"></div>
   </div>
 
@@ -523,6 +525,7 @@ async function loadFile(file){
   renderHex();
   renderDtb();
   renderAvb();
+  renderAnalyze();
   renderRepack();
   saveSession();
 }
@@ -535,6 +538,7 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   document.getElementById('panel-'+t.dataset.tab).classList.add('active');
   if (t.dataset.tab === 'diff' && state.raw) renderDiff();
   if (t.dataset.tab === 'batch') renderBatch();
+  if (t.dataset.tab === 'analyze' && state.raw) renderAnalyze();
 }));
 
 /* ============================== render: header ============================== */
@@ -660,7 +664,11 @@ function renderRamdisk(){
         <span class="grow"></span>
         <button class="primary" onclick="rebuildRamdiskFromEntries()">apply changes to ramdisk</button>
       </div>
-      <small class="note">Edits here modify an in-memory copy of the ramdisk. Click "apply changes" to rebuild the cpio archive — it'll then be used for repacking (tab: repack).</small>
+      <div class="flexrow" style="margin-top:8px;">
+        <button onclick="exportPatch()">export patch (.json)</button>
+        <label class="filebtn"><button onclick="this.nextElementSibling.click()">import patch (.json)</button><input type="file" accept=".json" style="display:none" onchange="importPatch(this.files[0])"></label>
+      </div>
+      <small class="note">Edits here modify an in-memory copy of the ramdisk. Click "apply changes" to rebuild the cpio archive — it'll then be used for repacking (tab: repack). Export/import patch lets you save just the add/replace edits you've made and replay them onto a fresh copy of a compatible image later.</small>
     </div>`;
 }
 function downloadCpioEntry(i){
@@ -1756,6 +1764,236 @@ async function restoreSession(){
 }
 checkForSavedSession();
 
+
+/* ============================== kernel config (IKCFG_PROC) extraction ============================== */
+function findIkcfg(kernelBytes){
+  const startMarker = new TextEncoder().encode('IKCFG_ST');
+  const endMarker = new TextEncoder().encode('IKCFG_ED');
+  const s = indexOfBytes(kernelBytes, startMarker);
+  if (s === -1) return null;
+  const e = indexOfBytes(kernelBytes, endMarker, s);
+  if (e === -1) return null;
+  const blob = kernelBytes.subarray(s + startMarker.length, e);
+  try{ return pako.inflate(blob); }catch(err){ return null; }
+}
+function indexOfBytes(hay, needle, from){
+  from = from || 0;
+  outer: for (let i = from; i <= hay.length - needle.length; i++){
+    for (let j = 0; j < needle.length; j++) if (hay[i+j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+/* ============================== strings scan ============================== */
+function extractStrings(data, minLen){
+  const out = [];
+  let run = [];
+  let start = 0;
+  for (let i=0;i<data.length;i++){
+    const b = data[i];
+    if (b >= 32 && b < 127){
+      if (run.length === 0) start = i;
+      run.push(b);
+    } else {
+      if (run.length >= minLen) out.push([start, String.fromCharCode(...run)]);
+      run = [];
+    }
+  }
+  if (run.length >= minLen) out.push([start, String.fromCharCode(...run)]);
+  return out;
+}
+const VERSION_HINT_RE = /(Linux version|gcc version|clang version|Android clang|Build fingerprint|SELinux|U-Boot)/i;
+
+/* ============================== root / modification scanner ============================== */
+const MAGISK_SIGNATURES = ['sbin/magisk','system/bin/magisk','.backup/.magisk','init.magisk.rc','overlay.d/magisk','magisk/magisk64','magisk/magisk32'];
+const KERNELSU_SIGNATURES = ['overlay.d/sbin/ksud','ksud','init.ksu.rc','system/bin/ksud'];
+const INITRC_SUSPECT_RE = /seclabel\s+u:r:su:s0|setuid\s+0\b.*setgid\s+0\b|capabilities\s+\S*CAP_SYS_ADMIN/;
+
+function scanRootSignatures(entries, plainBuf){
+  const names = entries.map(e => e.name);
+  const magiskHits = names.filter(n => MAGISK_SIGNATURES.some(sig => n.toLowerCase().includes(sig)));
+  const kernelsuHits = names.filter(n => KERNELSU_SIGNATURES.some(sig => n.toLowerCase().includes(sig)));
+  const sepolicyHits = entries.filter(e => { const b = e.name.split('/').pop(); return b === 'sepolicy' || b === 'precompiled_sepolicy'; });
+  const initrcFiles = entries.filter(e => e.name.split('/').pop().endsWith('.rc'));
+
+  const suspectLines = [];
+  for (const e of initrcFiles){
+    const bytes = plainBuf.subarray(e.dataStart, e.dataStart+e.size);
+    const text = new TextDecoder().decode(bytes);
+    text.split('\n').forEach((line, i) => {
+      if (INITRC_SUSPECT_RE.test(line)) suspectLines.push({ file: e.name, line: i+1, text: line.trim() });
+    });
+  }
+  return { magiskHits, kernelsuHits, sepolicyHits, initrcFiles, suspectLines };
+}
+
+/* ============================== DTBO / multi-DTB table ============================== */
+const DT_TABLE_MAGIC = 0xd7b7ab1e;
+function parseDtboTable(buf){
+  if (buf.length < 32) return null;
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.length);
+  const magic = dv.getUint32(0, false);
+  if (magic !== DT_TABLE_MAGIC) return null;
+  const totalSize = dv.getUint32(4, false);
+  const headerSize = dv.getUint32(8, false);
+  const dtEntrySize = dv.getUint32(12, false);
+  const dtEntryCount = dv.getUint32(16, false);
+  const dtEntriesOffset = dv.getUint32(20, false);
+  const pageSize = dv.getUint32(24, false);
+  const version = dv.getUint32(28, false);
+  const entries = [];
+  for (let i=0;i<dtEntryCount;i++){
+    const eoff = dtEntriesOffset + i*dtEntrySize;
+    entries.push({
+      index: i,
+      dtSize: dv.getUint32(eoff, false),
+      dtOffset: dv.getUint32(eoff+4, false),
+      id: dv.getUint32(eoff+8, false),
+      rev: dv.getUint32(eoff+12, false),
+    });
+  }
+  return { totalSize, headerSize, pageSize, version, entries };
+}
+
+/* ============================== analyze tab UI ============================== */
+function renderAnalyze(){
+  const el = document.getElementById('panel-analyze');
+  if (!state.sections){ el.innerHTML = `<div class="card"><div class="empty">load an image first</div></div>`; return; }
+
+  // -- kernel config --
+  let configHtml = '<div class="empty">no kernel section</div>';
+  if (state.sections.kernel){
+    const config = findIkcfg(state.sections.kernel.bytes);
+    if (config){
+      const text = new TextDecoder().decode(config);
+      const enabled = text.split('\n').filter(l => l.trim().endsWith('=y')).length;
+      const modules = text.split('\n').filter(l => l.trim().endsWith('=m')).length;
+      configHtml = `
+        <div class="kv"><div class="k">built-in ('=y')</div><div class="v">${enabled}</div>
+        <div class="k">modules ('=m')</div><div class="v">${modules}</div></div>
+        <div class="flexrow" style="margin-top:10px;">
+          <button onclick='downloadKernelConfig(${JSON.stringify(text)})'>download .config</button>
+        </div>`;
+    } else {
+      configHtml = '<div class="empty">no embedded config found (needs CONFIG_IKCFG_PROC)</div>';
+    }
+  }
+
+  // -- strings / banners --
+  let bannerHtml = '<div class="empty">no kernel section</div>';
+  if (state.sections.kernel){
+    const strings = extractStrings(state.sections.kernel.bytes, 6);
+    const highlights = strings.filter(([o,s]) => VERSION_HINT_RE.test(s));
+    bannerHtml = highlights.length
+      ? highlights.slice(0,20).map(([o,s]) => `<div class="mono-small">0x${o.toString(16)}: <span style="color:var(--text);">${s.replace(/</g,'&lt;')}</span></div>`).join('')
+      : '<div class="empty">no version/build banners matched</div>';
+    bannerHtml += `<div class="mono-small" style="margin-top:8px; color:var(--dimmer);">${strings.length} total printable strings &ge; 6 chars</div>`;
+  }
+
+  // -- root scan --
+  let rootHtml = '<div class="empty">no ramdisk cpio parsed</div>';
+  if (state.cpioEntries && state.cpioPlainBuffer){
+    const scan = scanRootSignatures(state.cpioEntries, state.cpioPlainBuffer);
+    rootHtml = `
+      <div class="kv">
+        <div class="k">Magisk</div><div class="v">${scan.magiskHits.length ? 'FOUND: '+scan.magiskHits.join(', ') : 'none'}</div>
+        <div class="k">KernelSU</div><div class="v">${scan.kernelsuHits.length ? 'FOUND: '+scan.kernelsuHits.join(', ') : 'none'}</div>
+        <div class="k">sepolicy</div><div class="v">${scan.sepolicyHits.length ? scan.sepolicyHits.map(e=>e.name).join(', ') : 'none found'}</div>
+        <div class="k">init*.rc scanned</div><div class="v">${scan.initrcFiles.length}</div>
+      </div>
+      ${scan.suspectLines.length ? `<div class="warnbox" style="margin-top:10px;">${scan.suspectLines.map(s=>`${s.file}:${s.line}: ${s.text}`).join('<br>')}</div>`
+        : '<div class="mono-small" style="margin-top:8px; color:var(--dimmer);">no suspect init.rc lines matched (seclabel u:r:su:s0, setuid/setgid 0 pairs, broad capabilities)</div>'}`;
+  }
+
+  // -- DTBO table (checked across dtb / recovery_dtbo sections) --
+  let dtboHtml = '<div class="empty">no DT_TABLE_MAGIC header found in dtb/recovery_dtbo</div>';
+  for (const name of ['dtb','recovery_dtbo']){
+    const sec = state.sections[name];
+    if (!sec) continue;
+    const table = parseDtboTable(sec.bytes);
+    if (table){
+      dtboHtml = `
+        <div class="kv"><div class="k">source</div><div class="v">${name}</div>
+        <div class="k">version</div><div class="v">${table.version}</div>
+        <div class="k">page_size</div><div class="v">${fmtBytes(table.pageSize)}</div>
+        <div class="k">entries</div><div class="v">${table.entries.length}</div></div>
+        <table style="margin-top:10px;"><thead><tr><th>#</th><th>id</th><th>rev</th><th>offset</th><th>size</th></tr></thead><tbody>
+        ${table.entries.map(e=>`<tr><td>${e.index}</td><td>0x${e.id.toString(16)}</td><td>0x${e.rev.toString(16)}</td><td>0x${e.dtOffset.toString(16)}</td><td>${fmtBytes(e.dtSize)}</td></tr>`).join('')}
+        </tbody></table>`;
+      break;
+    }
+  }
+
+  el.innerHTML = `
+    <div class="card"><h3>embedded kernel config (IKCFG_PROC)</h3>${configHtml}</div>
+    <div class="card"><h3>version / build banners (kernel strings)</h3>${bannerHtml}</div>
+    <div class="card"><h3>root / modification scan (ramdisk)</h3>${rootHtml}</div>
+    <div class="card"><h3>DTBO / multi-DTB table</h3>${dtboHtml}</div>`;
+}
+function downloadKernelConfig(text){
+  const blob = new Blob([text], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'kernel-config.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+/* ============================== patch export/import (ramdisk edits) ============================== */
+function exportPatch(){
+  if (!state.cpioEntries){ alert('no ramdisk loaded'); return; }
+  const ops = [];
+  for (const e of state.cpioEntries){
+    if (e._replacement){
+      ops.push({ op: e.dataStart === -1 ? 'add' : 'set', name: e.name, data: bytesToBase64(e._replacement) });
+    }
+  }
+  // entries present in the original cpio but no longer in state.cpioEntries are deletions;
+  // we don't track a separate "original" list post-edit, so this covers add/replace edits,
+  // which is the common case (matches the CLI's export-patch for added/modified files).
+  const patch = { format: 'aik-patch-v1', ramdisk: state.cpioKey, ops };
+  const blob = new Blob([JSON.stringify(patch, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'patch.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  log(`exported patch with ${ops.length} op(s)`, 'ok');
+}
+function bytesToBase64(bytes){
+  let bin = '';
+  for (let i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function base64ToBytes(b64){
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+async function importPatch(file){
+  if (!state.cpioEntries){ alert('load an image with a ramdisk first'); return; }
+  const text = await file.text();
+  let patch;
+  try{ patch = JSON.parse(text); }catch(e){ alert('not valid JSON'); return; }
+  if (patch.format !== 'aik-patch-v1'){ alert('unrecognized patch format'); return; }
+  let added=0, set=0, removed=0;
+  for (const op of patch.ops){
+    const idx = state.cpioEntries.findIndex(e => e.name === op.name);
+    if (op.op === 'add' || op.op === 'set'){
+      const bytes = base64ToBytes(op.data);
+      if (idx >= 0){
+        state.cpioEntries[idx]._replacement = bytes;
+        state.cpioEntries[idx].size = bytes.length;
+        set++;
+      } else {
+        state.cpioEntries.push({ name: op.name, mode: 0o100644, uid:0, gid:0, mtime:0, size: bytes.length, dataStart:-1, _replacement: bytes });
+        added++;
+      }
+    } else if (op.op === 'remove'){
+      if (idx >= 0){ state.cpioEntries.splice(idx,1); removed++; }
+    }
+  }
+  log(`imported patch from ${file.name}: ${added} added, ${set} set, ${removed} removed`, 'ok');
+  renderRamdisk();
+}
 
 </script>
 </body>
