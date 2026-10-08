@@ -25,6 +25,24 @@ Supports boot image header versions v0–v4 and vendor_boot v3–v4 (legacy devi
 
 ---
 
+## What's new in v1.2.0
+
+**All three tools:**
+- **`extract-config`** — pulls an embedded kernel `.config` out of a kernel built with `CONFIG_IKCFG_PROC` (finds the `IKCFG_ST`/`IKCFG_ED` markers, gunzips what's between them).
+- **`strings`** — scans a section for printable-ASCII runs, with build/version banners (`Linux version`, `gcc version`, `clang version`, `Build fingerprint`, ...) highlighted separately from the rest.
+- **`dtbo-table`** — parses the `dt_table_header` format used by `dtbo.img` and multi-DTB images (QCOM and others), listing every entry's id, revision, offset, and size.
+- **`scan-root`** — flags common Magisk and KernelSU file signatures in the ramdisk, reports any `sepolicy`/`precompiled_sepolicy` file found (plus its policy version, if readable), and scans `init*.rc` files for a few suspicious patterns (`seclabel u:r:su:s0`, paired `setuid 0`/`setgid 0`, broad capability grants). Pattern-matching only — a quick signal, not a security audit.
+- **`export-patch` / `apply-patch`** — captures the ramdisk edits you've made (added, replaced, or removed files) as a small portable JSON file, and replays them onto a fresh unpack of a compatible image. Useful for carrying the same edits across kernel rebuilds without redoing them by hand each time.
+- AVB `rollback_index` is now surfaced in `verify-sig` output / the browser's AVB verify panel.
+
+**AIK-Browser:** all of the above as an **analyze** tab, plus patch export/import buttons on the **ramdisk** tab.
+
+**aik.sh:** passthrough subcommands for all of the above.
+
+*(Two fixes found along the way: `unpack` no longer leaves a stray empty `<ramdisk>.index.json` file inside the extracted ramdisk tree, and `export-patch` no longer reports every directory entry as "removed".)*
+
+---
+
 ## What's new in v1.1.0
 
 **All three tools:**
@@ -159,3 +177,6 @@ All three tools implement the same format logic independently in their respectiv
 
 ---
 
+## License
+
+Add a license of your choice here (MIT is a common pick for tooling like this).
