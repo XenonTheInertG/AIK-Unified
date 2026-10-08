@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# aik.sh -- Android Image Kitchen (shell wrapper)   v1.1.0
+# aik.sh -- Android Image Kitchen (shell wrapper)   v1.2.0
 #
 # Convenience wrapper around aik.py providing the familiar
 # unpack/repack workflow, with a default working directory
@@ -23,6 +23,13 @@
 #       repacks every unpacked subdir under workdir-root
 #       default workdir-root: ./aik-batch, default output-dir: ./aik-batch-out
 #
+#   ./aik.sh extract-config <image> [output.txt]   dump embedded kernel .config
+#   ./aik.sh strings <image> [-- aik.py strings options]
+#   ./aik.sh dtbo-table <image>                    parse a dtbo.img / multi-DTB table
+#   ./aik.sh scan-root <image>                      flag Magisk/KernelSU/init.rc signatures
+#   ./aik.sh export-patch [workdir] [patch.json]    save ramdisk edits as a portable patch
+#   ./aik.sh apply-patch <workdir> <patch.json>     replay a patch onto a fresh unpack
+#
 #   ./aik.sh --version
 #
 # Requires: python3 on PATH, and aik.py in the same directory as this
@@ -34,7 +41,7 @@
 #
 set -euo pipefail
 
-AIK_SH_VERSION="1.1.0"
+AIK_SH_VERSION="1.2.0"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 AIK_PY="${AIK_PY:-$SCRIPT_DIR/aik.py}"
 DEFAULT_WORKDIR="./aik-work"
@@ -135,6 +142,48 @@ cmd_verify() {
   python3 "$AIK_PY" verify-sig "$image" "$@"
 }
 
+cmd_extract_config() {
+  local image="${1:?usage: aik.sh extract-config <image> [output.txt]}"
+  shift
+  [ -f "$image" ] || { echo "error: image not found: $image" >&2; exit 1; }
+  local out_args=()
+  [ "${1:-}" ] && out_args=(-o "$1")
+  python3 "$AIK_PY" extract-config "$image" "${out_args[@]}"
+}
+
+cmd_strings() {
+  local image="${1:?usage: aik.sh strings <image> [-- aik.py strings options]}"
+  shift
+  [ -f "$image" ] || { echo "error: image not found: $image" >&2; exit 1; }
+  python3 "$AIK_PY" strings "$image" "$@"
+}
+
+cmd_dtbo_table() {
+  local image="${1:?usage: aik.sh dtbo-table <image>}"
+  [ -f "$image" ] || { echo "error: image not found: $image" >&2; exit 1; }
+  python3 "$AIK_PY" dtbo-table "$image"
+}
+
+cmd_scan_root() {
+  local image="${1:?usage: aik.sh scan-root <image>}"
+  [ -f "$image" ] || { echo "error: image not found: $image" >&2; exit 1; }
+  python3 "$AIK_PY" scan-root "$image"
+}
+
+cmd_export_patch() {
+  local workdir="${1:-$DEFAULT_WORKDIR}"
+  shift || true
+  local out_args=()
+  [ "${1:-}" ] && out_args=(-o "$1")
+  python3 "$AIK_PY" export-patch "$workdir" "${out_args[@]}"
+}
+
+cmd_apply_patch() {
+  local workdir="${1:?usage: aik.sh apply-patch <workdir> <patch.json>}"
+  local patch="${2:?usage: aik.sh apply-patch <workdir> <patch.json>}"
+  python3 "$AIK_PY" apply-patch "$workdir" "$patch"
+}
+
 cmd_clean() {
   local workdir="${1:-$DEFAULT_WORKDIR}"
   if [ ! -d "$workdir" ]; then
@@ -218,6 +267,12 @@ main() {
     clean)          cmd_clean "$@" ;;
     batch-unpack)   cmd_batch_unpack "$@" ;;
     batch-repack)   cmd_batch_repack "$@" ;;
+    extract-config) cmd_extract_config "$@" ;;
+    strings)        cmd_strings "$@" ;;
+    dtbo-table)     cmd_dtbo_table "$@" ;;
+    scan-root)      cmd_scan_root "$@" ;;
+    export-patch)   cmd_export_patch "$@" ;;
+    apply-patch)    cmd_apply_patch "$@" ;;
     -h|--help|help) usage ;;
     *) echo "error: unknown subcommand '$sub'" >&2; usage ;;
   esac
