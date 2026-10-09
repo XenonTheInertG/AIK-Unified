@@ -3,126 +3,264 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<meta name="theme-color" content="#faf7ee">
 <title>Android Image Kitchen In Browser (AIK-Browser)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700;800&family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-  @font-face {
-    font-family: 'JBM';
-    src: local('JetBrains Mono'), local('Consolas'), local('Menlo');
-  }
   :root{
-    --bg:#0a0d0a; --panel:#0f130f; --panel2:#141914; --line:#232a23;
-    --text:#dfe6df; --dim:#828d82; --dimmer:#586158;
-    --green:#3fd97a; --green-dim:#2a7a4c; --amber:#e0a83e; --red:#e05c4e;
-    --mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+    /* Figly palette */
+    --paper:#faf7ee; --ink:#18181b; --card:#ffffff;
+    --muted:#f6f3f2; --muted-strong:#eae7e7;
+    --coral:#ff5a5f; --coral-soft:#ffdad8;
+    --plum:#5f5982; --lavender:#d7cffe; --lavender-soft:#e5deff;
+    --sun:#ffe16b; --mint:#38d9a9;
+    --stage:#18152e; --stage-deep:#120f24; --stage-line:#312b54; --stage-text:#a89fd1;
+
+    /* legacy variable names kept so every inline style in the script still resolves */
+    --bg:var(--paper); --panel:var(--card); --panel2:var(--muted); --line:var(--muted-strong);
+    --text:var(--ink); --dim:var(--plum); --dimmer:#7a7499;
+    --green:#0f9d75; --green-dim:var(--coral); --amber:#8a5a00; --red:#e0343b;
+
+    --shadow-sm:2px 2px 0 var(--ink);
+    --shadow:4px 4px 0 var(--ink);
+    --shadow-lg:6px 6px 0 var(--ink);
+    --shadow-plum:4px 4px 0 var(--plum);
+
+    --display:'Outfit', ui-sans-serif, system-ui, sans-serif;
+    --sans:'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+    --mono:'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   }
   *{box-sizing:border-box;}
-  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:var(--mono);}
-  body{padding:20px;padding-bottom:64px;font-size:14.5px;line-height:1.55;}
-  ::selection{background:var(--green-dim);color:#fff;}
-  h1,h2,h3{font-family:var(--mono);font-weight:700;margin:0;}
-  a{color:var(--green);}
-  .wrap{max-width:980px;margin:0 auto;}
+  html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-weight:500;}
+  body{padding:0;padding-bottom:64px;font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;min-height:100vh;}
+  ::selection{background:var(--coral-soft);color:var(--ink);}
+  :focus-visible{outline:3px solid var(--plum);outline-offset:2px;}
+  h1,h2,h3{font-family:var(--display);font-weight:800;margin:0;}
+  a{color:var(--plum);font-weight:700;}
+  .wrap{max-width:1040px;margin:0 auto;padding:24px 16px 0;}
 
-  /* header */
-  .top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:5px;flex-wrap:wrap;gap:8px;}
-  .brand{font-size:18px;letter-spacing:0.02em;}
-  .brand .prompt{color:var(--green);}
-  .brand .dim{color:var(--dim);font-weight:400;}
-  .brand .abbr{color:var(--dim);font-weight:400;font-size:14px;}
-  .sub{color:var(--dim);font-size:12.5px;margin-bottom:20px;}
+  /* ===== header ===== */
+  .site-header{
+    position:sticky; top:0; z-index:40; background:var(--card);
+    border-bottom:3px solid var(--ink); box-shadow:0 4px 0 var(--ink);
+  }
+  .top{
+    max-width:1040px; margin:0 auto; min-height:64px; padding:10px 16px;
+    display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+  }
+  .brand{display:flex; align-items:center; gap:12px; font-family:var(--display); font-size:19px; font-weight:800; letter-spacing:-0.01em; line-height:1.2;}
+  .brand .prompt{
+    display:inline-flex; align-items:center; justify-content:center; flex:none;
+    width:36px; height:36px; background:var(--coral); color:var(--ink);
+    border:2px solid var(--ink); border-radius:8px; box-shadow:var(--shadow-sm);
+    font-size:18px; font-weight:800;
+  }
+  .brand .dim{color:var(--plum);}
+  .brand .abbr{font-weight:700; font-size:13px; color:var(--plum);}
+  .top-badges{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
 
-  /* boot log console - signature element */
+  .sub{
+    display:flex; align-items:center; gap:12px;
+    background:var(--lavender-soft); border:2.5px solid var(--ink); box-shadow:var(--shadow);
+    padding:12px 14px; margin-bottom:24px; font-size:12.5px; font-weight:600; color:var(--plum);
+  }
+  .sub::before{
+    content:"i"; flex:none; display:flex; align-items:center; justify-content:center;
+    width:32px; height:32px; background:var(--card); color:var(--ink);
+    border:2px solid var(--ink); border-radius:8px; box-shadow:var(--shadow-sm);
+    font-family:var(--display); font-weight:800; font-size:16px;
+  }
+
+  /* ===== boot log stage - signature element ===== */
+  .stage{
+    background:var(--stage); border:3px solid var(--ink); box-shadow:var(--shadow-lg);
+    padding:14px; margin-bottom:24px; color:#fffdf5; overflow:hidden;
+  }
+  .stage-head{
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    border-bottom:2px solid var(--stage-line); padding-bottom:10px; margin-bottom:12px;
+  }
+  .dots{display:flex; gap:6px;}
+  .dots span{width:14px; height:14px; border-radius:50%; border:1.5px solid var(--ink); display:block;}
+  .dots span:nth-child(1){background:var(--coral);}
+  .dots span:nth-child(2){background:var(--sun);}
+  .dots span:nth-child(3){background:var(--mint);}
+  .stage-tag{
+    background:#252047; border:1px solid #443c78; color:var(--lavender-soft);
+    padding:2px 10px; border-radius:6px; font-size:12px; font-weight:700;
+  }
+  .stage-note{font-size:12px; font-weight:600; color:var(--stage-text);}
+
   .console{
-    background:#000; border:1px solid var(--line); border-radius:6px;
-    padding:12px 14px; height:170px; overflow-y:auto; font-size:12.5px;
-    color:#7fdb9a; margin-bottom:20px; white-space:pre-wrap; word-break:break-all;
+    background:var(--stage-deep); border:2px solid var(--stage-line); border-radius:0;
+    padding:12px 14px; height:170px; overflow-y:auto; font-family:var(--mono); font-size:12.5px; font-weight:500;
+    color:var(--lavender-soft); white-space:pre-wrap; word-break:break-all;
   }
+  .card .console{border-color:var(--ink);}
   .console .ln{opacity:0;animation:fadein .25s ease forwards;}
-  .console .t{color:var(--dimmer);}
-  .console .warn{color:var(--amber);}
-  .console .err{color:var(--red);}
-  .console .ok{color:var(--green);}
+  .console .t{color:var(--stage-text);}
+  .console .warn{color:var(--sun);}
+  .console .err{color:var(--coral);}
+  .console .ok{color:var(--mint);}
+  .console .empty{color:var(--stage-text);}
   @keyframes fadein{to{opacity:1;}}
-  .console::-webkit-scrollbar{width:8px;}
-  .console::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px;}
+  .console::-webkit-scrollbar{width:10px;}
+  .console::-webkit-scrollbar-track{background:var(--stage-deep);}
+  .console::-webkit-scrollbar-thumb{background:var(--stage-line); border:2px solid var(--stage-deep);}
 
-  /* drop zone */
+  /* ===== drop zone ===== */
   .drop{
-    border:1px dashed var(--line); border-radius:8px; padding:34px 18px;
-    text-align:center; cursor:pointer; transition:border-color .15s, background .15s;
-    background:var(--panel); margin-bottom:20px;
+    border:2.5px dashed var(--ink); border-radius:0; padding:34px 18px;
+    text-align:center; cursor:pointer;
+    transition:transform .15s ease-out, box-shadow .15s ease-out, background-color .15s ease-out;
+    background:var(--card); margin-bottom:24px; box-shadow:var(--shadow);
   }
-  .drop:hover, .drop.drag{border-color:var(--green-dim); background:var(--panel2);}
-  .drop .icon{font-size:22px; color:var(--dim); margin-bottom:8px;}
-  .drop .main{color:var(--text); font-size:14.5px;}
-  .drop .hint{color:var(--dimmer); font-size:12px; margin-top:5px;}
+  .drop:hover{background:var(--lavender-soft); transform:translate(-2px,-2px); box-shadow:var(--shadow-lg);}
+  .drop.drag{background:var(--lavender); transform:translate(2px,2px); box-shadow:none;}
+  .drop .icon{
+    display:inline-flex; align-items:center; justify-content:center; width:44px; height:44px;
+    background:var(--coral); border:2px solid var(--ink); border-radius:10px; box-shadow:var(--shadow-sm);
+    font-size:22px; font-weight:800; color:var(--ink); margin-bottom:10px;
+  }
+  .drop .main{color:var(--ink); font-family:var(--display); font-weight:700; font-size:16px;}
+  .drop .hint{color:var(--plum); font-size:12px; font-weight:600; margin-top:5px;}
   input[type=file]{display:none;}
 
-  /* tabs */
-  .tabs{display:flex; gap:2px; border-bottom:1px solid var(--line); margin-bottom:18px; flex-wrap:wrap;}
-  .tab{padding:9px 16px; color:var(--dim); cursor:pointer; font-size:13px; border-bottom:2px solid transparent; user-select:none;}
-  .tab:hover{color:var(--text);}
-  .tab.active{color:var(--green); border-bottom-color:var(--green);}
+  /* ===== tabs (pill nav group) ===== */
+  .tabs{
+    display:flex; gap:4px; padding:4px; margin-bottom:20px; flex-wrap:wrap;
+    background:var(--muted); border:2.5px solid var(--ink); border-radius:16px; box-shadow:var(--shadow-sm);
+  }
+  .tab{
+    padding:6px 14px; color:var(--ink); cursor:pointer; font-size:13px; font-weight:700;
+    border:2px solid transparent; border-radius:12px; user-select:none;
+    transition:background-color .15s ease-out;
+  }
+  .tab:hover{background:var(--muted-strong);}
+  .tab.active{background:var(--coral); border-color:var(--ink); box-shadow:var(--shadow-sm);}
   .panel{display:none;}
   .panel.active{display:block;}
 
-  /* cards / rows */
-  .card{background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:16px 18px; margin-bottom:14px;}
-  .card h3{font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); margin-bottom:11px; font-weight:600;}
+  /* ===== cards / rows ===== */
+  .card{background:var(--card); border:2.5px solid var(--ink); box-shadow:var(--shadow); border-radius:0; padding:16px 18px; margin-bottom:18px;}
+  .card h3{
+    display:flex; align-items:center; gap:8px;
+    font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink);
+    margin-bottom:12px; font-weight:800;
+  }
+  .card h3::before{content:""; width:10px; height:10px; background:var(--coral); border:2px solid var(--ink); flex:none;}
   .kv{display:grid; grid-template-columns:168px 1fr; gap:6px 10px; font-size:13px;}
-  .kv .k{color:var(--dimmer);}
-  .kv .v{color:var(--text); word-break:break-all;}
-  .badge{display:inline-block; padding:2px 8px; border-radius:3px; font-size:10.5px; border:1px solid var(--line); color:var(--dim); margin-left:6px;}
-  .badge.green{color:var(--green); border-color:var(--green-dim);}
-  .badge.amber{color:var(--amber); border-color:#7a5f22;}
+  .kv .k{color:var(--plum); font-weight:700;}
+  .kv .v{color:var(--ink); word-break:break-all; font-family:var(--mono); font-size:12.5px;}
+  .badge{
+    display:inline-block; padding:1px 9px; border-radius:999px; font-size:10.5px; font-weight:700;
+    border:1.5px solid var(--ink); background:var(--lavender-soft); color:var(--ink); margin-left:6px;
+    box-shadow:var(--shadow-sm); white-space:nowrap;
+  }
+  .top-badges .badge{margin-left:0;}
+  .badge.green{background:var(--mint);}
+  .badge.amber{background:var(--sun);}
 
-  .seclist{display:flex; flex-direction:column; gap:9px;}
-  .sec{display:flex; align-items:center; justify-content:space-between; padding:11px 13px; background:var(--panel2); border:1px solid var(--line); border-radius:5px; flex-wrap:wrap; gap:8px;}
-  .sec .name{font-weight:700; color:var(--text); font-size:13.5px;}
-  .sec .meta{color:var(--dimmer); font-size:12px; margin-top:2px;}
+  .seclist{display:flex; flex-direction:column; gap:12px;}
+  .sec{
+    display:flex; align-items:center; justify-content:space-between; padding:11px 13px;
+    background:var(--muted); border:2px solid var(--ink); border-radius:0; box-shadow:var(--shadow-sm);
+    flex-wrap:wrap; gap:8px;
+  }
+  .sec .name{font-family:var(--display); font-weight:700; color:var(--ink); font-size:14.5px;}
+  .sec .meta{color:var(--plum); font-size:12px; font-weight:600; margin-top:2px; font-family:var(--mono);}
   .sec .actions{display:flex; gap:6px; align-items:center;}
 
+  /* ===== buttons ===== */
   button, .btn{
-    font-family:var(--mono); font-size:12.5px; background:transparent; color:var(--text);
-    border:1px solid var(--line); border-radius:4px; padding:7px 12px; cursor:pointer;
-    transition:border-color .12s, color .12s;
+    font-family:var(--sans); font-size:12px; font-weight:700; background:var(--card); color:var(--ink);
+    border:2px solid var(--ink); border-radius:12px; padding:6px 14px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px; box-shadow:var(--shadow-sm);
+    transition:transform .15s ease-out, box-shadow .15s ease-out, background-color .15s ease-out;
   }
-  button:hover, .btn:hover{border-color:var(--green-dim); color:var(--green);}
-  button.primary{border-color:var(--green-dim); color:var(--green); background:rgba(63,217,122,.06);}
-  button.primary:hover{background:rgba(63,217,122,.12);}
-  button:disabled{opacity:.35; cursor:not-allowed;}
-  button.danger:hover{border-color:#7a2e26; color:var(--red);}
+  button:hover:not(:disabled), .btn:hover{transform:translate(-2px,-2px); box-shadow:var(--shadow);}
+  button:active:not(:disabled), .btn:active{transform:translate(2px,2px); box-shadow:none;}
+  button.primary{background:var(--coral);}
+  button.danger:hover:not(:disabled){background:var(--coral-soft);}
+  button:disabled{opacity:.4; cursor:not-allowed;}
   label.filebtn{display:inline-block;}
+  td button{padding:3px 10px; font-size:11px; margin:2px 0;}
 
-  table{width:100%; border-collapse:collapse; font-size:12.5px;}
-  th{text-align:left; color:var(--dimmer); font-weight:600; padding:7px 9px; border-bottom:1px solid var(--line); text-transform:uppercase; font-size:10.5px; letter-spacing:.05em;}
-  td{padding:7px 9px; border-bottom:1px solid var(--line); color:var(--text); word-break:break-all;}
-  tr:hover td{background:var(--panel2);}
-  .mono-small{color:var(--dimmer); font-size:11px;}
+  /* ===== form fields ===== */
+  select, input:not([type]), input[type=text]{
+    font-family:var(--mono); font-size:12.5px; font-weight:700; color:var(--ink); background:var(--muted);
+    border:2px solid var(--ink); border-radius:8px; padding:6px 10px; box-shadow:var(--shadow-sm); outline:none;
+  }
+  select{cursor:pointer;}
+  input:not([type]):focus, input[type=text]:focus, select:focus{background:var(--card); border-color:var(--coral);}
+  textarea.editor{
+    flex:1; min-height:300px; background:var(--stage-deep); color:#fffdf5; border:2px solid var(--ink);
+    padding:10px; font-family:var(--mono); font-size:12.5px; resize:vertical; outline:none;
+  }
+  textarea.editor:focus{border-color:var(--coral);}
+  .modal-overlay{position:fixed; inset:0; background:rgba(24,21,46,.72); z-index:1000; display:flex; align-items:center; justify-content:center; padding:20px;}
+  .modal-box{
+    background:var(--card); border:3px solid var(--ink); box-shadow:var(--shadow-lg); padding:18px;
+    max-width:700px; width:100%; max-height:85vh; display:flex; flex-direction:column;
+  }
+  .modal-box h3{margin-bottom:10px; font-size:15px;}
 
-  .warnbox{border:1px solid #7a5f22; background:rgba(224,168,62,.07); border-radius:5px; padding:11px 13px; font-size:12.5px; color:var(--amber); margin-bottom:13px;}
-  .warnbox b{color:var(--amber);}
-  .errbox{border:1px solid #7a2e26; background:rgba(224,92,78,.07); border-radius:5px; padding:11px 13px; font-size:12.5px; color:var(--red); margin-bottom:13px;}
+  /* ===== tables ===== */
+  table{width:100%; border-collapse:collapse; font-size:12.5px; border:2px solid var(--ink);}
+  th{
+    text-align:left; color:var(--ink); font-weight:800; padding:8px 9px; background:var(--muted-strong);
+    border-bottom:2px solid var(--ink); text-transform:uppercase; font-size:10.5px; letter-spacing:.04em; font-family:var(--display);
+  }
+  td{padding:7px 9px; border-bottom:1.5px solid var(--muted-strong); color:var(--ink); word-break:break-all; font-family:var(--mono);}
+  tr:hover td{background:var(--lavender-soft);}
+  .mono-small{color:var(--plum); font-size:11px; font-weight:600; font-family:var(--mono);}
 
-  .footer-actions{position:sticky; bottom:0; background:linear-gradient(transparent, var(--bg) 30%); padding-top:20px; margin-top:10px; display:flex; gap:8px; justify-content:flex-end;}
+  /* ===== notices ===== */
+  .warnbox{border:2.5px solid var(--ink); background:var(--sun); box-shadow:var(--shadow-sm); padding:11px 13px; font-size:12.5px; font-weight:600; color:var(--ink); margin-bottom:14px;}
+  .warnbox b{color:var(--ink); font-weight:800;}
+  .errbox{border:2.5px solid var(--ink); background:var(--coral-soft); box-shadow:var(--shadow-sm); padding:11px 13px; font-size:12.5px; font-weight:700; color:var(--ink); margin-bottom:14px;}
 
-  .empty{color:var(--dimmer); font-size:12px; text-align:center; padding:30px 0;}
+  .footer-actions{position:sticky; bottom:0; background:linear-gradient(transparent, var(--paper) 30%); padding-top:20px; margin-top:10px; display:flex; gap:8px; justify-content:flex-end;}
+
+  .empty{color:var(--plum); font-size:12.5px; font-weight:600; text-align:center; padding:30px 0;}
   .flexrow{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
   .grow{flex:1;}
-  small.note{color:var(--dimmer); font-size:10.5px; display:block; margin-top:6px;}
+  small.note{color:var(--plum); font-size:11.5px; font-weight:600; display:block; margin-top:8px;}
+
+  @media (max-width:560px){
+    .kv{grid-template-columns:110px 1fr;}
+    .brand{font-size:16px;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    *, *::before, *::after{transition-duration:.01ms !important; animation-duration:.01ms !important;}
+  }
 </style>
 </head>
 <body>
+
+<header class="site-header">
+  <div class="top">
+    <div class="brand"><span class="prompt">&gt;</span><span>Android Image Kitchen In Browser <span class="abbr dim">(AIK-Browser)</span></span></div>
+    <div class="top-badges">
+      <div class="badge" id="libStatus">loading libs…</div>
+      <div class="badge">v1.2.0</div>
+    </div>
+  </div>
+</header>
+
 <div class="wrap">
 
-  <div class="top">
-    <div class="brand"><span class="prompt">&gt;</span> Android Image Kitchen In Browser <span class="abbr dim">(AIK-Browser)</span></div>
-    <div class="badge" id="libStatus">loading libs…</div>
-    <div class="badge">v1.2.0</div>
-  </div>
   <div class="sub">Unpack &amp; repack Android boot.img / recovery.img / vendor_boot.img — entirely in your browser. Nothing is uploaded anywhere.</div>
 
-  <div class="console" id="console"></div>
+  <div class="stage">
+    <div class="stage-head">
+      <div class="dots" aria-hidden="true"><span></span><span></span><span></span></div>
+      <span class="stage-tag">boot log</span>
+    </div>
+    <div class="console" id="console"></div>
+  </div>
 
   <div class="drop" id="drop">
     <div class="icon">⇩</div>
@@ -658,13 +796,13 @@ function renderRamdisk(){
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <div class="flexrow" style="margin-top:12px;">
+      <div class="flexrow" style="margin-top:14px;">
         <label class="filebtn"><button onclick="this.nextElementSibling.click()">add file</button><input type="file" style="display:none" onchange="addCpioEntry(this.files[0])"></label>
         <button onclick="downloadCpioZip()">download all as zip</button>
         <span class="grow"></span>
         <button class="primary" onclick="rebuildRamdiskFromEntries()">apply changes to ramdisk</button>
       </div>
-      <div class="flexrow" style="margin-top:8px;">
+      <div class="flexrow" style="margin-top:10px;">
         <button onclick="exportPatch()">export patch (.json)</button>
         <label class="filebtn"><button onclick="this.nextElementSibling.click()">import patch (.json)</button><input type="file" accept=".json" style="display:none" onchange="importPatch(this.files[0])"></label>
       </div>
@@ -936,13 +1074,13 @@ function renderHex(){
   el.innerHTML = `
     <div class="card">
       <h3>hex / ascii dump</h3>
-      <div class="flexrow" style="margin-bottom:10px;">
-        <select id="hexSectionSel" onchange="hexState.section=this.value; hexState.offset=0; renderHexDump();" style="background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:6px 10px; font-family:var(--mono); font-size:12.5px;">${opts}</select>
+      <div class="flexrow" style="margin-bottom:12px;">
+        <select id="hexSectionSel" onchange="hexState.section=this.value; hexState.offset=0; renderHexDump();">${opts}</select>
         <span class="grow"></span>
         <button onclick="hexState.offset=Math.max(0,hexState.offset-HEX_PAGE); renderHexDump();">&larr; prev</button>
         <button onclick="hexState.offset+=HEX_PAGE; renderHexDump();">next &rarr;</button>
       </div>
-      <div id="hexDump" class="console" style="height:340px; color:var(--text);"></div>
+      <div id="hexDump" class="console" style="height:340px;"></div>
       <small class="note">Showing ${HEX_PAGE} bytes per page from the section's raw (still-compressed, if applicable) bytes.</small>
     </div>`;
   renderHexDump();
@@ -1041,10 +1179,10 @@ function formatDtbPropValue(p){
 function renderDtbNode(node, depth){
   const pad = 14 + depth*18;
   let html = `<div style="padding:5px 0 5px ${pad}px; border-bottom:1px solid var(--line);">`;
-  html += `<span style="color:var(--green); font-weight:700;">${node.name}</span>`;
+  html += `<span style="color:var(--plum); font-family:var(--display); font-weight:800;">${node.name}</span>`;
   html += `</div>`;
   for (const p of node.props){
-    html += `<div style="padding:4px 0 4px ${pad+16}px; font-size:11.5px; color:var(--dimmer); border-bottom:1px solid var(--line);">`;
+    html += `<div style="padding:4px 0 4px ${pad+16}px; font-size:11.5px; font-family:var(--mono); color:var(--dimmer); border-bottom:1px solid var(--line);">`;
     html += `<span style="color:var(--dim);">${p.name}</span> = <span style="color:var(--text);">${formatDtbPropValue(p)}</span>`;
     html += `</div>`;
   }
@@ -1377,17 +1515,17 @@ async function renderAvb(){
   el.innerHTML = `
     <div class="card">
       <h3>sign (AVB hash-footer)</h3>
-      <div class="flexrow" style="margin-bottom:10px;">
-        <select id="avbAlgoSel" style="background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:6px 10px; font-family:var(--mono); font-size:12.5px;">
+      <div class="flexrow" style="margin-bottom:12px;">
+        <select id="avbAlgoSel">
           <option value="SHA256_RSA2048">SHA256_RSA2048</option>
           <option value="SHA256_RSA4096">SHA256_RSA4096</option>
         </select>
-        <input id="avbPartName" value="boot" style="background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:4px; padding:6px 10px; font-family:var(--mono); font-size:12.5px; width:120px;">
+        <input type="text" id="avbPartName" value="boot" style="width:120px;">
         <button onclick="avbDoGenKey()">generate new key</button>
         <label class="filebtn"><button onclick="this.nextElementSibling.click()">import private key (.pem)</button><input type="file" style="display:none" onchange="avbDoImportKey(this.files[0])"></label>
       </div>
       <div id="avbKeyStatus" class="mono-small">no key loaded — generate or import one to sign</div>
-      <div class="flexrow" style="margin-top:10px;">
+      <div class="flexrow" style="margin-top:12px;">
         <button class="primary" onclick="avbDoSign()">sign whole loaded image</button>
       </div>
       <div id="avbSignResult"></div>
@@ -1439,14 +1577,14 @@ async function avbDoSign(){
     const { bytes, meta } = await avbSignImage(imageBytes, avbKeypair.privateKey, avbKeypair.publicKey, partName, algo);
     state._avbSignedBytes = bytes;
     document.getElementById('avbSignResult').innerHTML = `
-      <div class="card" style="margin-top:10px;">
+      <div class="card" style="margin-top:12px; box-shadow:var(--shadow-sm);">
         <div class="kv">
           <div class="k">partition size</div><div class="v">${fmtBytes(meta.partitionSize)}</div>
           <div class="k">vbmeta offset</div><div class="v">0x${meta.vbmetaOffset.toString(16)}</div>
           <div class="k">salt</div><div class="v">${meta.salt}</div>
           <div class="k">digest (sha256)</div><div class="v">${meta.digest}</div>
         </div>
-        <div class="flexrow" style="margin-top:10px;"><button class="primary" onclick="avbDownloadSigned()">download signed image</button></div>
+        <div class="flexrow" style="margin-top:12px;"><button class="primary" onclick="avbDownloadSigned()">download signed image</button></div>
       </div>`;
     log('signed successfully', 'ok');
   }catch(e){
@@ -1474,7 +1612,7 @@ async function avbDoVerify(file){
   const result = await avbVerifyImage(buf, pubKey);
   const resEl = document.getElementById('avbVerifyResult');
   if (!result.ok && result.reason){
-    resEl.innerHTML = `<div class="errbox" style="margin-top:10px;">${result.reason}</div>`;
+    resEl.innerHTML = `<div class="errbox" style="margin-top:12px;">${result.reason}</div>`;
     return;
   }
   let rows = '';
@@ -1482,10 +1620,10 @@ async function avbDoVerify(file){
     const label = v === null ? 'SKIPPED' : (v ? 'OK' : 'FAILED');
     rows += `<div class="kv"><div class="k">${label}${v===false?' ⚠':''}</div><div class="v">${k}</div></div>`;
   }
-  resEl.innerHTML = `<div class="card" style="margin-top:10px;">
+  resEl.innerHTML = `<div class="card" style="margin-top:12px; box-shadow:var(--shadow-sm);">
     <div class="kv"><div class="k">algorithm</div><div class="v">${Object.entries(AVB_ALGORITHMS).find(([n,a])=>a[0]===result.vbmeta.algorithmType)?.[0] || result.vbmeta.algorithmType}</div></div>
     ${rows}
-    <div style="margin-top:8px; font-weight:700; color:${result.ok?'var(--green)':'var(--red)'}">${result.ok ? 'overall: OK' : 'overall: FAILED'}</div>
+    <div style="margin-top:8px; font-family:var(--display); font-weight:800; color:${result.ok?'var(--green)':'var(--red)'}">${result.ok ? 'overall: OK' : 'overall: FAILED'}</div>
   </div>`;
 }
 
@@ -1562,7 +1700,7 @@ function renderDiff(){
         <div class="k">A</div><div class="v">${state.filename}</div>
         <div class="k">B</div><div class="v">${diffState.other.filename}</div>
       </div>
-      <div class="flexrow" style="margin-top:10px;"><button onclick="diffState.other=null; renderDiff();">choose a different B</button></div>
+      <div class="flexrow" style="margin-top:12px;"><button onclick="diffState.other=null; renderDiff();">choose a different B</button></div>
     </div>
     <div class="card">
       <h3>header differences</h3>
@@ -1613,7 +1751,7 @@ function renderBatch(){
   el.innerHTML = `
     <div class="card">
       <h3>batch — compare multiple images at a glance</h3>
-      <div class="drop" style="margin-bottom:12px;" onclick="document.getElementById('batchFileInput').click()"
+      <div class="drop" style="margin-bottom:14px;" onclick="document.getElementById('batchFileInput').click()"
            ondragover="event.preventDefault(); this.classList.add('drag')" ondragleave="this.classList.remove('drag')"
            ondrop="event.preventDefault(); this.classList.remove('drag'); batchLoadFiles(event.dataTransfer.files)">
         <div class="main">Drop multiple images here to add them to the table</div>
@@ -1678,12 +1816,12 @@ function openTextEditorFor(entryIndex){
   if (modal) modal.remove();
   modal = document.createElement('div');
   modal.id = modalId;
-  modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:1000; display:flex; align-items:center; justify-content:center; padding:20px;';
+  modal.className = 'modal-overlay';
   modal.innerHTML = `
-    <div style="background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; max-width:700px; width:100%; max-height:85vh; display:flex; flex-direction:column;">
-      <h3 style="margin-bottom:10px;">editing ${e.name}</h3>
-      <textarea id="textEditArea" style="flex:1; min-height:300px; background:#000; color:var(--text); border:1px solid var(--line); border-radius:4px; padding:10px; font-family:var(--mono); font-size:12.5px; resize:vertical;">${text.replace(/</g,'&lt;')}</textarea>
-      <div id="textEditWarnings" style="margin-top:8px;"></div>
+    <div class="modal-box">
+      <h3>editing ${e.name}</h3>
+      <textarea id="textEditArea" class="editor">${text.replace(/</g,'&lt;')}</textarea>
+      <div id="textEditWarnings" style="margin-top:10px;"></div>
       <div class="flexrow" style="margin-top:12px;">
         <button class="primary" onclick="saveTextEdit(${entryIndex})">save</button>
         <button onclick="document.getElementById('${modalId}').remove()">cancel</button>
@@ -1745,7 +1883,7 @@ async function checkForSavedSession(){
   if (!rec || !rec.raw) return;
   const banner = document.createElement('div');
   banner.className = 'card';
-  banner.style.cssText = 'border-color:var(--green-dim);';
+  banner.style.cssText = 'background:var(--lavender-soft);';
   banner.innerHTML = `
     <div class="flexrow">
       <div class="grow mono-small">Found a previous session: <b style="color:var(--text)">${rec.filename}</b> (${fmtBytes(rec.raw.byteLength)}) — restore the source file? Edits from that session are not saved, only the original upload.</div>
@@ -1872,7 +2010,7 @@ function renderAnalyze(){
       configHtml = `
         <div class="kv"><div class="k">built-in ('=y')</div><div class="v">${enabled}</div>
         <div class="k">modules ('=m')</div><div class="v">${modules}</div></div>
-        <div class="flexrow" style="margin-top:10px;">
+        <div class="flexrow" style="margin-top:12px;">
           <button onclick='downloadKernelConfig(${JSON.stringify(text)})'>download .config</button>
         </div>`;
     } else {
@@ -1902,7 +2040,7 @@ function renderAnalyze(){
         <div class="k">sepolicy</div><div class="v">${scan.sepolicyHits.length ? scan.sepolicyHits.map(e=>e.name).join(', ') : 'none found'}</div>
         <div class="k">init*.rc scanned</div><div class="v">${scan.initrcFiles.length}</div>
       </div>
-      ${scan.suspectLines.length ? `<div class="warnbox" style="margin-top:10px;">${scan.suspectLines.map(s=>`${s.file}:${s.line}: ${s.text}`).join('<br>')}</div>`
+      ${scan.suspectLines.length ? `<div class="warnbox" style="margin-top:12px;">${scan.suspectLines.map(s=>`${s.file}:${s.line}: ${s.text}`).join('<br>')}</div>`
         : '<div class="mono-small" style="margin-top:8px; color:var(--dimmer);">no suspect init.rc lines matched (seclabel u:r:su:s0, setuid/setgid 0 pairs, broad capabilities)</div>'}`;
   }
 
@@ -1918,7 +2056,7 @@ function renderAnalyze(){
         <div class="k">version</div><div class="v">${table.version}</div>
         <div class="k">page_size</div><div class="v">${fmtBytes(table.pageSize)}</div>
         <div class="k">entries</div><div class="v">${table.entries.length}</div></div>
-        <table style="margin-top:10px;"><thead><tr><th>#</th><th>id</th><th>rev</th><th>offset</th><th>size</th></tr></thead><tbody>
+        <table style="margin-top:12px;"><thead><tr><th>#</th><th>id</th><th>rev</th><th>offset</th><th>size</th></tr></thead><tbody>
         ${table.entries.map(e=>`<tr><td>${e.index}</td><td>0x${e.id.toString(16)}</td><td>0x${e.rev.toString(16)}</td><td>0x${e.dtOffset.toString(16)}</td><td>${fmtBytes(e.dtSize)}</td></tr>`).join('')}
         </tbody></table>`;
       break;
@@ -1998,4 +2136,3 @@ async function importPatch(file){
 </script>
 </body>
 </html>
-
